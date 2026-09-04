@@ -49,16 +49,17 @@ The script prints the authenticated Igor API URL. Submit an idea:
 
 ```bash
 python3 -m pip install boto3
-python3 scripts/igor.py submit \
+python3 scripts/igor.py \
   --url "$(aws cloudformation describe-stacks --stack-name igor \
     --query 'Stacks[0].Outputs[?OutputKey==`IgorUrl`].OutputValue' --output text)" \
+  submit \
   "Build a tiny service that returns a friendly greeting and the current UTC time."
 ```
 
 Check the returned job ID:
 
 ```bash
-python3 scripts/igor.py status --url "$IGOR_URL" JOB_ID
+python3 scripts/igor.py --url "$IGOR_URL" status JOB_ID
 ```
 
 ## Develop
@@ -77,4 +78,3 @@ See [docs/architecture.md](docs/architecture.md) for the data flow and
 - The worker reads this public repository at build time.
 - The control API uses AWS IAM signing; it is not public.
 - Deployment has not been claimed until it has been run in an AWS account.
-

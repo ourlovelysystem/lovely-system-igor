@@ -96,6 +96,7 @@ Resources:
                   - lambda:DeleteFunctionUrlConfig
                   - lambda:GetFunction
                   - lambda:GetFunctionUrlConfig
+                  - lambda:GetPolicy
                   - lambda:ListTags
                   - lambda:RemovePermission
                   - lambda:TagResource
@@ -280,4 +281,3 @@ Outputs:
     Value: !Ref EvidenceBucket
   WorkerProjectName:
     Value: !Ref WorkerProject
-

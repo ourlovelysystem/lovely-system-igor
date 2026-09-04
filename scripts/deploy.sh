@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+cd "$repo_root"
+
 stack_name="${IGOR_STACK_NAME:-igor}"
 region="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 model_id="${IGOR_MODEL_ID:-global.openai.gpt-5.6-terra}"
