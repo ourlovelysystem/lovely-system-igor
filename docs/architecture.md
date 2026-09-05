@@ -5,14 +5,17 @@
 1. An operator signs in to the dashboard through Cognito, or uses the
    IAM-authenticated CLI.
 2. API Gateway validates dashboard tokens before invoking Igor.
-3. The conversational Lambda loads durable context, calls Terra, and may invoke
-   the bounded build tool when the operator explicitly requests execution.
+3. The conversational Lambda loads durable context, calls Terra, and submits
+   the operator's complete objective through one general execution tool.
 4. The control Lambda writes a `QUEUED` record and starts CodeBuild.
-5. The worker changes the job to `RUNNING` and asks Bedrock for `app.py`.
-6. Igor parses and statically validates the generated source without executing it.
-7. Igor uploads the source bundle and creates a per-job CloudFormation stack.
-8. Igor probes the stack's live Function URL.
-9. Igor writes evidence to S3, then sets `WORKING`, `FAILED`, or `BLOCKED`.
+5. The worker changes the job to `RUNNING` and starts an agentic Terra loop.
+6. Terra uses `run_command` to inspect AWS, create files, operate services,
+   observe failures, and verify the resulting live state.
+7. Igor validates Terra's terminal evidence request. Changed systems require a
+   cited successful verification command after the last change.
+8. Igor independently probes every claimed public HTTP endpoint.
+9. Igor archives the complete worker workspace and command transcript to S3,
+   then records `WORKING`, `FAILED`, `BLOCKED`, or `INCOMPLETE` in DynamoDB.
 
 ## Trust boundaries
 
@@ -24,24 +27,23 @@ The separate IAM Function URL preserves scripted access.
 The conversational Lambda can call Bedrock, store conversations, and invoke the
 control Lambda. It cannot deploy workloads directly.
 
-The control Lambda can create jobs but cannot deploy workloads. The CodeBuild
-worker can ask Bedrock and operate only Igor job stacks. CloudFormation assumes
-a deployment role. Generated Lambdas receive a separate role containing only
-CloudWatch Logs permissions.
+The control Lambda can create jobs but cannot deploy workloads. The ephemeral
+CodeBuild worker has `PowerUserAccess`, with explicit denial of updates or
+deletion against the `igor` stack and retrieval of Secrets Manager values.
+AWS managed `PowerUserAccess` excludes IAM administration. Igor provides one
+pre-existing passable workload role and EC2 instance profile for services that
+require runtime AWS authority.
 
-Generated source is never imported, tested, or executed by CodeBuild. Static
-validation permits only the `json` import and rejects dynamic execution,
-filesystem, network, process, reflection, and AWS SDK primitives. The source
-executes for the first time in the generated Lambda's minimal role.
+The generality is intentional: the execution model may run AWS CLI, Python,
+git, curl, build tools, and generated code inside CodeBuild. Its command log and
+workspace archive make the work inspectable. This is materially more authority
+than the original generated-Lambda pilot.
 
 ## Evidence gate
 
-`WORKING` requires all of these facts:
-
-1. Bedrock returned the required JSON envelope.
-2. Python AST parsing and Igor's policy checks passed.
-3. CloudFormation reached `CREATE_COMPLETE`.
-4. The deployed URL returned HTTP 2xx to Igor's probe.
-
-The evidence object records timestamps, model ID, source SHA-256, stack ID,
-endpoint, probe status, and a bounded response excerpt.
+`WORKING` requires successful command evidence. If changes were made, at least
+one cited `verify` command must have run successfully after the last change
+command. Every claimed public endpoint must also return HTTP 2xx to Igor's
+independent probe. The evidence object records the objective, model, command
+transcript, cited command IDs, resources, endpoints, independent probes, and
+workspace archive URI.

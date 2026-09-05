@@ -35,6 +35,8 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(202, result["statusCode"])
         item = self.table.put_item.call_args.kwargs["Item"]
         self.assertEqual("QUEUED", item["status"])
+        self.assertEqual("general_aws", item["task_type"])
+        self.assertEqual("Build a greeting API", item["objective"])
         self.assertEqual("model-default", item["model_id"])
         self.codebuild.start_build.assert_called_once()
         self.assertIn("job_id", json.loads(result["body"]))

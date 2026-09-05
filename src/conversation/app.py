@@ -16,34 +16,37 @@ MAX_CONTEXT_MESSAGES = 60
 MAX_TOOL_ROUNDS = 4
 BYTES_MARKER = "__igor_bytes_base64_v1__"
 
-SYSTEM_PROMPT = """You are Igor, a private AWS-resident conversational coding and infrastructure
-operator. Speak plainly and preserve conversational context. You may answer general questions without
-using a tool. Your only execution capability today is submit_build, which creates one new, small,
-stateless Python HTTP Lambda under Igor's verified deployment contract. Use it only when the operator
-clearly asks you to build or deploy something that fits that boundary. Use get_job_status when the
-operator asks about a known job. Never imply that requested work was performed unless a tool result
-shows it. Report QUEUED or RUNNING as unfinished. Report WORKING only when the tool reports WORKING.
-If a request needs capabilities you do not have, say exactly what is unavailable. Do not invent AWS,
-GitHub, test, deployment, endpoint, or evidence results."""
+SYSTEM_PROMPT = """You are Igor, Will Daly's private AWS-resident conversational coding and
+infrastructure worker. Will directs the work. Speak plainly, preserve conversational context, and use
+your own implementation judgment when his requested outcome leaves details open. Answer ordinary
+questions conversationally. When Will directs you to create, change, inspect, diagnose, test, repair,
+or remove software or AWS infrastructure, use execute_task with his complete objective. Do not replace
+his objective with a smaller preapproved task and do not ask him to operate AWS for you. Use
+get_job_status for a known job. Never imply that work was performed unless a tool result proves it.
+QUEUED and RUNNING are unfinished. WORKING requires recorded execution and verification evidence.
+Report BLOCKED, FAILED, or INCOMPLETE plainly. Do not invent AWS, GitHub, test, deployment, endpoint,
+or evidence results."""
 
 TOOL_CONFIG = {
     "tools": [
         {
             "toolSpec": {
-                "name": "submit_build",
+                "name": "execute_task",
                 "description": (
-                    "Submit a new bounded Igor build: one dependency-free, stateless Python HTTP Lambda."
+                    "Submit the operator's general coding or AWS objective to Igor's isolated execution "
+                    "worker. The worker can inspect AWS, write code, run commands, create or change "
+                    "infrastructure, test the result, and preserve evidence."
                 ),
                 "inputSchema": {
                     "json": {
                         "type": "object",
                         "properties": {
-                            "idea": {
+                            "objective": {
                                 "type": "string",
-                                "description": "Complete product requirement for the small HTTP service.",
+                                "description": "The operator's complete requested outcome and constraints.",
                             }
                         },
-                        "required": ["idea"],
+                        "required": ["objective"],
                         "additionalProperties": False,
                     }
                 },
@@ -229,11 +232,17 @@ def _invoke_control(lambda_client: Any, function_name: str, method: str, path: s
 def _run_tool(lambda_client: Any, function_name: str, name: str, inputs: Any) -> Any:
     if not isinstance(inputs, dict):
         raise ValueError("tool input must be an object")
-    if name == "submit_build":
-        idea = inputs.get("idea")
-        if not isinstance(idea, str) or not idea.strip():
-            raise ValueError("submit_build requires a non-empty idea")
-        return _invoke_control(lambda_client, function_name, "POST", "/jobs", {"idea": idea})
+    if name == "execute_task":
+        objective = inputs.get("objective")
+        if not isinstance(objective, str) or not objective.strip():
+            raise ValueError("execute_task requires a non-empty objective")
+        return _invoke_control(
+            lambda_client,
+            function_name,
+            "POST",
+            "/jobs",
+            {"idea": objective, "task_type": "general_aws"},
+        )
     if name == "get_job_status":
         job_id = inputs.get("job_id")
         if not isinstance(job_id, str) or not job_id or "/" in job_id:

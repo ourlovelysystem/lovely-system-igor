@@ -3,6 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
+from uuid import uuid4
 
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src" / "worker"))
@@ -77,6 +78,160 @@ class RunnerTests(unittest.TestCase):
         inference_config = bedrock.converse.call_args.kwargs["inferenceConfig"]
         self.assertEqual({"maxTokens": 5000}, inference_config)
         self.assertNotIn("temperature", inference_config)
+
+    def test_working_finish_requires_post_change_verification(self):
+        commands = [
+            {"command_id": "cmd-001", "category": "change", "exit_code": 0},
+            {"command_id": "cmd-002", "category": "verify", "exit_code": 0},
+        ]
+        finish = {
+            "status": "WORKING",
+            "summary": "Live service verified.",
+            "changes_made": True,
+            "evidence_command_ids": ["cmd-002"],
+            "resources": ["example-resource"],
+            "public_endpoints": ["https://example.com"],
+            "limitations": [],
+        }
+        self.assertEqual(finish, runner.Worker._validate_finish(finish, commands))
+
+    def test_working_finish_rejects_pre_change_evidence(self):
+        commands = [
+            {"command_id": "cmd-001", "category": "verify", "exit_code": 0},
+            {"command_id": "cmd-002", "category": "change", "exit_code": 0},
+        ]
+        finish = {
+            "status": "WORKING",
+            "summary": "Unsupported claim.",
+            "changes_made": True,
+            "evidence_command_ids": ["cmd-001"],
+            "resources": [],
+            "public_endpoints": [],
+            "limitations": [],
+        }
+        with self.assertRaisesRegex(ValueError, "after the last change"):
+            runner.Worker._validate_finish(finish, commands)
+
+    def test_working_finish_rejects_failed_evidence_command(self):
+        commands = [{"command_id": "cmd-001", "category": "verify", "exit_code": 1}]
+        finish = {
+            "status": "WORKING",
+            "summary": "False success.",
+            "changes_made": False,
+            "evidence_command_ids": ["cmd-001"],
+            "resources": [],
+            "public_endpoints": [],
+            "limitations": [],
+        }
+        with self.assertRaisesRegex(ValueError, "must have succeeded"):
+            runner.Worker._validate_finish(finish, commands)
+
+    def test_template_grants_general_worker_but_protects_control_stack(self):
+        template = (Path(__file__).parents[1] / "template.yaml").read_text()
+        self.assertIn("arn:aws:iam::aws:policy/PowerUserAccess", template)
+        self.assertIn("cloudformation:DeleteStack", template)
+        self.assertIn("stack/${AWS::StackName}/*", template)
+        self.assertIn("secretsmanager:GetSecretValue", template)
+        self.assertIn("WORKLOAD_ROLE_ARN", template)
+
+    def test_general_agent_executes_changes_and_records_evidence(self):
+        table = Mock()
+        s3 = Mock()
+        bedrock = Mock()
+        bedrock.converse.side_effect = [
+            {
+                "output": {
+                    "message": {
+                        "content": [
+                            {
+                                "toolUse": {
+                                    "toolUseId": "tool-change",
+                                    "name": "run_command",
+                                    "input": {
+                                        "command": "touch service",
+                                        "purpose": "Create the service",
+                                        "category": "change",
+                                    },
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "output": {
+                    "message": {
+                        "content": [
+                            {
+                                "toolUse": {
+                                    "toolUseId": "tool-verify",
+                                    "name": "run_command",
+                                    "input": {
+                                        "command": "test -f service",
+                                        "purpose": "Verify the service",
+                                        "category": "verify",
+                                    },
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "output": {
+                    "message": {
+                        "content": [
+                            {
+                                "toolUse": {
+                                    "toolUseId": "tool-finish",
+                                    "name": "finish_task",
+                                    "input": {
+                                        "status": "WORKING",
+                                        "summary": "Service created and verified.",
+                                        "changes_made": True,
+                                        "evidence_command_ids": ["cmd-002"],
+                                        "resources": ["service"],
+                                        "public_endpoints": [],
+                                        "limitations": [],
+                                    },
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+        ]
+        command_runner = Mock(
+            return_value={"exit_code": 0, "stdout": "ok", "stderr": "", "duration_seconds": 0.1}
+        )
+        worker = runner.Worker(
+            table=table,
+            bedrock=bedrock,
+            s3=s3,
+            cloudformation=Mock(),
+            evidence_bucket="evidence",
+            execution_role_arn="legacy-role",
+            cloudformation_role_arn="legacy-cfn-role",
+            workload_role_arn="workload-role",
+            workload_instance_profile="workload-profile",
+            command_runner=command_runner,
+        )
+        job_id = uuid4().hex
+        item = {
+            "job_id": job_id,
+            "task_type": "general_aws",
+            "objective": "Create and verify a service",
+            "idea": "Create and verify a service",
+            "model_id": "terra",
+        }
+        evidence = {"job_id": job_id, "checks": []}
+
+        result = worker.run_general(job_id, item, evidence)
+
+        self.assertEqual("WORKING", result["status"])
+        self.assertEqual(2, len(result["commands"]))
+        self.assertEqual(3, bedrock.converse.call_count)
+        self.assertEqual(2, s3.put_object.call_count)
 
 
 if __name__ == "__main__":

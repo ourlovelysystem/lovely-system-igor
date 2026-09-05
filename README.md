@@ -1,19 +1,15 @@
 # Igor
 
-Igor is an AWS-resident conversational coding worker. Talk through an idea,
-ask Igor to build it, and receive either a verified deployment or an honest
-failure record.
-
-This first vertical slice builds one kind of system: a dependency-free Python
-HTTP Lambda. It generates the handler with Amazon Bedrock, deploys it in a
-per-job CloudFormation stack, and probes the live URL. A job becomes `WORKING`
-only after the live probe returns a 2xx response.
+Igor is an AWS-resident conversational coding and infrastructure worker. Tell
+Igor the outcome you want. Its isolated worker can inspect AWS, write code,
+run development and AWS CLI commands, create or change infrastructure, observe
+failures, correct its work, and preserve the resulting code and evidence.
 
 ## Truth contract
 
 Igor reports exactly one terminal state:
 
-- `WORKING` — static checks, CloudFormation deployment, and live HTTP probe passed.
+- `WORKING` — cited execution commands and post-change verification succeeded.
 - `FAILED` — Igor attempted the work and captured the failing stage and error.
 - `BLOCKED` — permissions, model access, quota, or another external prerequisite stopped it.
 - `INCOMPLETE` — reserved for work that ended without sufficient evidence.
@@ -29,15 +25,14 @@ JSON evidence record in S3. A model's claim is never accepted as proof.
 - Lambda: persistent conversational tool loop
 - DynamoDB: durable conversations and job records
 - CodeBuild: isolated worker
-- Bedrock: configurable code-generation model
-- CloudFormation: generated workload deployment
-- S3: source bundles and evidence
+- Bedrock: configurable conversational and execution model
+- AWS CLI and development tools: general execution inside CodeBuild
+- S3: complete worker workspace archives and evidence
 - CloudWatch: Lambda and CodeBuild logs
-- IAM: separate control, worker, deployment, and generated-app roles
+- IAM: separate control, worker, legacy deployment, and passable workload roles
 
-AgentCore is not yet in this slice. The conversation and tool contracts are
-kept separate from CodeBuild so the conversational runtime can move to
-AgentCore without allowing generated code to execute inside that runtime.
+AgentCore is not required for this implementation. Generated commands execute
+inside an ephemeral CodeBuild worker, not inside the conversational Lambda.
 
 ## Deploy
 
@@ -85,12 +80,20 @@ python3 -m unittest discover -s tests -v
 See [docs/architecture.md](docs/architecture.md) for the data flow and
 [LOGBOOK.md](LOGBOOK.md) for decisions and observed results.
 
-## Current boundaries
+## Authority and boundaries
 
-- One generated AWS Lambda per job; no arbitrary infrastructure yet.
-- The conversational interface has only two tools: submit a bounded build and
-  read a known job's status.
-- The generated handler may import only `json` and has no AWS permissions.
+- The operator's natural-language objective directs the task; infrastructure
+  types are not hard-coded into the conversation tool.
+- The worker has AWS `PowerUserAccess`. It cannot create IAM users, access keys,
+  or roles. It may pass Igor's existing workload role to supported services.
+- The worker is explicitly denied permission to update or delete Igor's own
+  CloudFormation stack and to retrieve Secrets Manager secret values.
+- The execution prompt also forbids modifying Igor's control plane or printing
+  credentials and secrets. These model instructions supplement IAM; they are
+  not represented as an IAM security boundary.
+- Every worker workspace is archived to S3 before the job becomes terminal.
+- `WORKING` with changes requires cited successful verification after the last
+  change. Claimed public endpoints receive a separate HTTP probe from Igor.
 - The worker reads this public repository at build time.
 - The CLI control URL uses AWS IAM signing. The dashboard API requires a
   Cognito token from an invited operator.

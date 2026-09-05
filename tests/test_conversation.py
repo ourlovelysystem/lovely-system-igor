@@ -114,7 +114,7 @@ class ConversationTests(unittest.TestCase):
             bytes,
         )
 
-    def test_build_tool_queues_job_and_returns_truthful_followup(self):
+    def test_general_task_tool_queues_job_and_returns_truthful_followup(self):
         self.table.query.return_value = {
             "Items": [
                 {
@@ -133,8 +133,8 @@ class ConversationTests(unittest.TestCase):
                             {
                                 "toolUse": {
                                     "toolUseId": "tool-1",
-                                    "name": "submit_build",
-                                    "input": {"idea": "Build a greeting service."},
+                                    "name": "execute_task",
+                                    "input": {"objective": "Build a greeting service."},
                                 }
                             }
                         ],
@@ -170,10 +170,14 @@ class ConversationTests(unittest.TestCase):
         )
 
         self.assertEqual("Job job-123 is queued; it is not complete.", result["text"])
-        self.assertEqual("submit_build", result["tool_events"][0]["name"])
+        self.assertEqual("execute_task", result["tool_events"][0]["name"])
         self.assertEqual("QUEUED", result["tool_events"][0]["result"]["status"])
         invoked = json.loads(self.lambda_client.invoke.call_args.kwargs["Payload"])
         self.assertEqual("/jobs", invoked["rawPath"])
+        self.assertEqual(
+            "Build a greeting service.",
+            json.loads(invoked["body"])["idea"],
+        )
 
 
 if __name__ == "__main__":

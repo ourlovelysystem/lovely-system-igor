@@ -1,4 +1,4 @@
-"""Igor's small job control API.
+"""Igor's general task control API.
 
 The same handler sits behind an IAM-authenticated Function URL for CLI use and
 a Cognito-authenticated HTTP API for the operator dashboard.
@@ -103,6 +103,8 @@ def handle(
         timestamp = now_iso()
         item = {
             "job_id": job_id,
+            "task_type": "general_aws",
+            "objective": idea,
             "idea": idea,
             "model_id": model_id.strip(),
             "status": "QUEUED",

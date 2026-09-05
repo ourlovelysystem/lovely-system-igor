@@ -47,3 +47,21 @@ can hold a persistent Terra conversation in the browser. Terra may invoke the
 existing bounded build worker and read job status, but it receives no general
 AWS or GitHub authority in this increment. The dashboard displays durable job
 state and evidence rather than treating the model's statements as proof.
+
+## 2026-09-05 — operator-directed general execution
+
+The bounded capability catalog was rejected because it made Igor work under
+the designer's direction instead of Will Daly's. Igor now exposes one general
+execution tool carrying Will's objective verbatim. An ephemeral Terra-driven
+CodeBuild worker can inspect AWS, write and run code, operate infrastructure,
+recover from observed errors, and verify results.
+
+This is a deliberate authority expansion. The worker receives AWS managed
+`PowerUserAccess`, while IAM administration remains excluded. It may pass one
+pre-existing workload role. It is explicitly denied updates or deletion of the
+`igor` CloudFormation stack and retrieval of Secrets Manager values. Generated
+files are archived to S3. `WORKING` requires cited successful post-change
+verification, and public endpoints receive an independent HTTP probe.
+
+Local result: 23 tests pass. Live deployment and operator acceptance tests are
+pending.
