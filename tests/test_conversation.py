@@ -91,6 +91,29 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual([], result["tool_events"])
         self.lambda_client.invoke.assert_not_called()
 
+    def test_binary_reasoning_content_survives_storage_round_trip(self):
+        content = [
+            {"reasoningContent": {"redactedContent": b"\x00\xffprivate-reasoning"}},
+            {"text": "The visible answer."},
+        ]
+
+        conversation._put_message(
+            self.table,
+            conversation_id="abc",
+            role="assistant",
+            content=content,
+        )
+
+        stored_item = self.table.put_item.call_args.kwargs["Item"]
+        self.table.query.return_value = {"Items": [stored_item]}
+        loaded = conversation._load_messages(self.table, "abc")
+
+        self.assertEqual(content, loaded[0]["content"])
+        self.assertIsInstance(
+            loaded[0]["content"][0]["reasoningContent"]["redactedContent"],
+            bytes,
+        )
+
     def test_build_tool_queues_job_and_returns_truthful_followup(self):
         self.table.query.return_value = {
             "Items": [

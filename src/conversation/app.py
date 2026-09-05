@@ -14,6 +14,7 @@ from typing import Any
 MAX_MESSAGE_LENGTH = 20_000
 MAX_CONTEXT_MESSAGES = 60
 MAX_TOOL_ROUNDS = 4
+BYTES_MARKER = "__igor_bytes_base64_v1__"
 
 SYSTEM_PROMPT = """You are Igor, a private AWS-resident conversational coding and infrastructure
 operator. Speak plainly and preserve conversational context. You may answer general questions without
@@ -90,6 +91,18 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Cannot encode {type(value).__name__}")
 
 
+def _content_json_default(value: Any) -> Any:
+    if isinstance(value, (bytes, bytearray)):
+        return {BYTES_MARKER: base64.b64encode(bytes(value)).decode("ascii")}
+    raise TypeError(f"Cannot encode conversation content of type {type(value).__name__}")
+
+
+def _content_json_object_hook(value: dict[str, Any]) -> Any:
+    if set(value) == {BYTES_MARKER} and isinstance(value[BYTES_MARKER], str):
+        return base64.b64decode(value[BYTES_MARKER], validate=True)
+    return value
+
+
 def _request(event: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     method = (
         event.get("requestContext", {}).get("http", {}).get("method")
@@ -147,7 +160,11 @@ def _put_message(
         "record_key": f"MSG#{timestamp}#{uuid.uuid4().hex}",
         "created_at": timestamp,
         "role": role,
-        "content_json": json.dumps(content, separators=(",", ":")),
+        "content_json": json.dumps(
+            content,
+            separators=(",", ":"),
+            default=_content_json_default,
+        ),
     }
     table.put_item(Item=item)
     return item
@@ -162,7 +179,13 @@ def _load_messages(table: Any, conversation_id: str) -> list[dict[str, Any]]:
     )
     items = list(reversed(page.get("Items", [])))
     return [
-        {"role": item["role"], "content": json.loads(item["content_json"])}
+        {
+            "role": item["role"],
+            "content": json.loads(
+                item["content_json"],
+                object_hook=_content_json_object_hook,
+            ),
+        }
         for item in items
     ]
 
