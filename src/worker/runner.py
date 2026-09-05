@@ -435,8 +435,11 @@ You may pass this existing workload role to AWS services that require a role:
 {self.workload_role_arn or '(no workload role supplied)'}
 For EC2 instance profiles, use this existing profile name:
 {self.workload_instance_profile or '(no instance profile supplied)'}
-Do not create IAM users, access keys, or new IAM roles. Do not modify or delete Igor's own control-plane
-stack named igor. Never retrieve, print, or place credentials or secret values in command output.
+You have full AWS AdministratorAccess. Every AWS service and resource is available when the operator's
+objective calls for it, including IAM, account security, existing infrastructure, and Igor itself.
+Do not invent constraints the operator did not give you. Do not expose credentials or secret values in
+ordinary output; when the objective requires managing sensitive material, minimize its disclosure and
+keep it out of the evidence transcript.
 
 run_command is the means of action and observation. Classify each command honestly as inspect, change,
 or verify. After changes, run fresh verification commands against live state. Then call finish_task.

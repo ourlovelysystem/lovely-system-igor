@@ -84,13 +84,12 @@ See [docs/architecture.md](docs/architecture.md) for the data flow and
 
 - The operator's natural-language objective directs the task; infrastructure
   types are not hard-coded into the conversation tool.
-- The worker has AWS `PowerUserAccess`. It cannot create IAM users, access keys,
-  or roles. It may pass Igor's existing workload role to supported services.
-- The worker is explicitly denied permission to update or delete Igor's own
-  CloudFormation stack and to retrieve Secrets Manager secret values.
-- The execution prompt also forbids modifying Igor's control plane or printing
-  credentials and secrets. These model instructions supplement IAM; they are
-  not represented as an IAM security boundary.
+- The worker and its passable workload role have AWS `AdministratorAccess`.
+  Igor can operate every AWS service, including IAM and existing resources.
+- There is no IAM boundary protecting Igor's own control plane from Igor. The
+  operator's direction is the authority boundary.
+- The execution prompt tells Igor to minimize disclosure of credentials and
+  secret values, but IAM does not prevent access when the task requires it.
 - Every worker workspace is archived to S3 before the job becomes terminal.
 - `WORKING` with changes requires cited successful verification after the last
   change. Claimed public endpoints receive a separate HTTP probe from Igor.

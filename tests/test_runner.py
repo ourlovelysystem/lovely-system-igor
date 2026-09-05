@@ -126,12 +126,11 @@ class RunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must have succeeded"):
             runner.Worker._validate_finish(finish, commands)
 
-    def test_template_grants_general_worker_but_protects_control_stack(self):
+    def test_template_grants_unbounded_aws_administrator_access(self):
         template = (Path(__file__).parents[1] / "template.yaml").read_text()
-        self.assertIn("arn:aws:iam::aws:policy/PowerUserAccess", template)
-        self.assertIn("cloudformation:DeleteStack", template)
-        self.assertIn("stack/${AWS::StackName}/*", template)
-        self.assertIn("secretsmanager:GetSecretValue", template)
+        self.assertEqual(2, template.count("arn:aws:iam::aws:policy/AdministratorAccess"))
+        self.assertNotIn("arn:aws:iam::aws:policy/PowerUserAccess", template)
+        self.assertNotIn("Effect: Deny", template)
         self.assertIn("WORKLOAD_ROLE_ARN", template)
 
     def test_general_agent_executes_changes_and_records_evidence(self):

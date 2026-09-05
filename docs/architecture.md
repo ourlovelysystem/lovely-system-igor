@@ -28,16 +28,15 @@ The conversational Lambda can call Bedrock, store conversations, and invoke the
 control Lambda. It cannot deploy workloads directly.
 
 The control Lambda can create jobs but cannot deploy workloads. The ephemeral
-CodeBuild worker has `PowerUserAccess`, with explicit denial of updates or
-deletion against the `igor` stack and retrieval of Secrets Manager values.
-AWS managed `PowerUserAccess` excludes IAM administration. Igor provides one
-pre-existing passable workload role and EC2 instance profile for services that
-require runtime AWS authority.
+CodeBuild worker has AWS managed `AdministratorAccess`. Igor also provides an
+administrator workload role and EC2 instance profile that the worker may pass
+to services. No IAM policy protects Igor's own stack or other existing account
+resources from the worker; the operator's objective is the authority boundary.
 
 The generality is intentional: the execution model may run AWS CLI, Python,
 git, curl, build tools, and generated code inside CodeBuild. Its command log and
-workspace archive make the work inspectable. This is materially more authority
-than the original generated-Lambda pilot.
+workspace archive make the work inspectable. This is account-administrator
+authority and is materially more authority than the original pilot.
 
 ## Evidence gate
 

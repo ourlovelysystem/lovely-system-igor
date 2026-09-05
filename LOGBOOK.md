@@ -63,5 +63,18 @@ pre-existing workload role. It is explicitly denied updates or deletion of the
 files are archived to S3. `WORKING` requires cited successful post-change
 verification, and public endpoints receive an independent HTTP probe.
 
-Local result: 23 tests pass. Live deployment and operator acceptance tests are
+Local result: 25 tests pass. Live deployment and operator acceptance tests are
 pending.
+
+## 2026-09-05 — remove the remaining AWS capability boundary
+
+Will Daly rejected the claim of general AWS execution while the worker still
+used `PowerUserAccess`, lacked IAM administration, and was denied access to
+Igor's stack and Secrets Manager values. Those restrictions contradicted the
+requirement that Igor be able to do anything in AWS under Will's direction.
+
+The worker and passable workload role now receive AWS managed
+`AdministratorAccess`. The explicit denies protecting the `igor` stack and
+Secrets Manager values were removed. The truth contract remains: administrator
+authority permits action, while successful execution and verification evidence
+govern what Igor may claim.

@@ -153,7 +153,7 @@ Resources:
                 - states.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/PowerUserAccess
+        - arn:aws:iam::aws:policy/AdministratorAccess
 
   WorkloadInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -165,7 +165,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/PowerUserAccess
+        - arn:aws:iam::aws:policy/AdministratorAccess
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -221,17 +221,6 @@ Resources:
                       - lambda.amazonaws.com
                       - scheduler.amazonaws.com
                       - states.amazonaws.com
-              - Effect: Deny
-                Action:
-                  - cloudformation:CancelUpdateStack
-                  - cloudformation:ContinueUpdateRollback
-                  - cloudformation:DeleteStack
-                  - cloudformation:RollbackStack
-                  - cloudformation:UpdateStack
-                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*
-              - Effect: Deny
-                Action: secretsmanager:GetSecretValue
-                Resource: "*"
 
   WorkerProject:
     Type: AWS::CodeBuild::Project
