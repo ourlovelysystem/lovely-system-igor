@@ -46,6 +46,16 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(400, result["statusCode"])
         self.table.put_item.assert_not_called()
 
+    def test_submit_links_job_to_conversation(self):
+        result = self.call(
+            "POST",
+            "/jobs",
+            {"idea": "List EC2 instances", "conversation_id": "conversation-123"},
+        )
+        self.assertEqual(202, result["statusCode"])
+        item = self.table.put_item.call_args.kwargs["Item"]
+        self.assertEqual("conversation-123", item["conversation_id"])
+
     def test_get_returns_durable_job(self):
         self.table.get_item.return_value = {"Item": {"job_id": "abc", "status": "WORKING"}}
         result = self.call("GET", "/jobs/abc")

@@ -15,7 +15,9 @@
    cited successful verification command after the last change.
 8. Igor independently probes every claimed public HTTP endpoint.
 9. Igor archives the complete worker workspace and command transcript to S3,
-   then records `WORKING`, `FAILED`, `BLOCKED`, or `INCOMPLETE` in DynamoDB.
+   writes the terminal result into the originating conversation, then records
+   `WORKING`, `FAILED`, `BLOCKED`, or `INCOMPLETE` in DynamoDB. The dashboard
+   observes the job transition and refreshes the open conversation.
 
 ## Trust boundaries
 

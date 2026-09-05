@@ -111,6 +111,11 @@ def handle(
             "created_at": timestamp,
             "updated_at": timestamp,
         }
+        conversation_id = body.get("conversation_id")
+        if conversation_id is not None:
+            if not isinstance(conversation_id, str) or not conversation_id.strip():
+                return response(400, {"error": "conversation_id must be a non-empty string"})
+            item["conversation_id"] = conversation_id.strip()
         table.put_item(Item=item, ConditionExpression="attribute_not_exists(job_id)")
         try:
             build = codebuild.start_build(

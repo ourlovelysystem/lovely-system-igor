@@ -229,7 +229,14 @@ def _invoke_control(lambda_client: Any, function_name: str, method: str, path: s
     return body_value
 
 
-def _run_tool(lambda_client: Any, function_name: str, name: str, inputs: Any) -> Any:
+def _run_tool(
+    lambda_client: Any,
+    function_name: str,
+    name: str,
+    inputs: Any,
+    *,
+    conversation_id: str,
+) -> Any:
     if not isinstance(inputs, dict):
         raise ValueError("tool input must be an object")
     if name == "execute_task":
@@ -241,7 +248,11 @@ def _run_tool(lambda_client: Any, function_name: str, name: str, inputs: Any) ->
             function_name,
             "POST",
             "/jobs",
-            {"idea": objective, "task_type": "general_aws"},
+            {
+                "idea": objective,
+                "task_type": "general_aws",
+                "conversation_id": conversation_id,
+            },
         )
     if name == "get_job_status":
         job_id = inputs.get("job_id")
@@ -305,6 +316,7 @@ def converse(
                     control_function_name,
                     name,
                     tool_use.get("input", {}),
+                    conversation_id=conversation_id,
                 )
                 status = "success"
             except Exception as exc:

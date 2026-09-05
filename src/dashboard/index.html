@@ -134,7 +134,7 @@
       const config = window.IGOR_CONFIG;
       const terminal = new Set(['WORKING', 'FAILED', 'BLOCKED', 'INCOMPLETE']);
       const tokenKey = 'igor.idToken';
-      let challenge = null, timer = null, currentConversationId = null, conversations = [];
+      let challenge = null, timer = null, currentConversationId = null, conversations = [], jobStates = new Map();
       const $ = (id) => document.getElementById(id);
       const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[character]);
 
@@ -211,13 +211,15 @@
         }
       }
       function jobCard(job) {
-        const status=escapeHtml(job.status||'UNKNOWN'); const endpoint=typeof job.endpoint==='string'&&job.endpoint.startsWith('https://')?job.endpoint:'';
+        const status=escapeHtml(job.status||'UNKNOWN'); const endpoint=typeof job.endpoint==='string'&&/^https?:\/\//.test(job.endpoint)?job.endpoint:'';
         const failure=job.failure&&(job.failure.message||JSON.stringify(job.failure));
-        return `<article class="job"><div class="job-top"><strong>${escapeHtml(job.job_id)}</strong><span class="status ${status.toLowerCase()}">${status}</span></div><div class="job-idea">${escapeHtml(job.idea)}</div><div class="facts">stage: ${escapeHtml(job.stage||'queued')} · updated: ${escapeHtml(job.updated_at||job.created_at)}</div>${failure?`<div class="failure">${escapeHtml(failure)}</div>`:''}<div class="actions">${endpoint?`<a href="${escapeHtml(endpoint)}" target="_blank" rel="noopener">Open deployment</a>`:''}<button type="button" data-copy="${escapeHtml(job.job_id)}">Copy job ID</button>${job.evidence_uri?`<button type="button" data-copy="${escapeHtml(job.evidence_uri)}">Copy evidence URI</button>`:''}</div></article>`;
+        const summary=job.summary?`<div class="job-idea">${escapeHtml(job.summary)}</div>`:'';
+        const resources=Array.isArray(job.resources)&&job.resources.length?`<div class="facts">resources: ${job.resources.map(escapeHtml).join(' · ')}</div>`:'';
+        return `<article class="job"><div class="job-top"><strong>${escapeHtml(job.job_id)}</strong><span class="status ${status.toLowerCase()}">${status}</span></div><div class="job-idea">${escapeHtml(job.idea)}</div>${summary}<div class="facts">stage: ${escapeHtml(job.stage||'queued')} · updated: ${escapeHtml(job.updated_at||job.created_at)}</div>${resources}${failure?`<div class="failure">${escapeHtml(failure)}</div>`:''}<div class="actions">${endpoint?`<a href="${escapeHtml(endpoint)}" target="_blank" rel="noopener">Open deployment</a>`:''}<button type="button" data-copy="${escapeHtml(job.job_id)}">Copy job ID</button>${job.evidence_uri?`<button type="button" data-copy="${escapeHtml(job.evidence_uri)}">Copy evidence URI</button>`:''}</div></article>`;
       }
       async function refreshJobs() {
         if ($('dashboardView').hidden) return;
-        try { const body=await api('/jobs'); const jobs=body.jobs||[]; $('jobs').innerHTML=jobs.length?jobs.map(jobCard).join(''):'<div class="subtle">No jobs yet.</div>'; const active=jobs.filter((job)=>!terminal.has(job.status)).length; $('refreshState').textContent=active?`${active} active`:'current'; }
+        try { const body=await api('/jobs'); const jobs=body.jobs||[]; const completed=jobs.some((job)=>job.conversation_id===currentConversationId&&terminal.has(job.status)&&jobStates.get(job.job_id)!==job.status); jobStates=new Map(jobs.map((job)=>[job.job_id,job.status])); $('jobs').innerHTML=jobs.length?jobs.map(jobCard).join(''):'<div class="subtle">No jobs yet.</div>'; const active=jobs.filter((job)=>!terminal.has(job.status)).length; $('refreshState').textContent=active?`${active} active`:'current'; if(completed&&currentConversationId)await selectConversation(currentConversationId); }
         catch (error) { if(!$('dashboardView').hidden)$('refreshState').textContent=error.message; }
       }
 

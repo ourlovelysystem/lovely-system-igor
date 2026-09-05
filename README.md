@@ -93,6 +93,9 @@ See [docs/architecture.md](docs/architecture.md) for the data flow and
 - Every worker workspace is archived to S3 before the job becomes terminal.
 - `WORKING` with changes requires cited successful verification after the last
   change. Claimed public endpoints receive a separate HTTP probe from Igor.
+- Every job retains its originating conversation. Its terminal summary,
+  resources, endpoints, and evidence locations are written back as a durable
+  Igor message, and the open dashboard conversation refreshes automatically.
 - The worker reads this public repository at build time.
 - The CLI control URL uses AWS IAM signing. The dashboard API requires a
   Cognito token from an invited operator.

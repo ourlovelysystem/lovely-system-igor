@@ -78,3 +78,16 @@ The worker and passable workload role now receive AWS managed
 Secrets Manager values were removed. The truth contract remains: administrator
 authority permits action, while successful execution and verification evidence
 govern what Igor may claim.
+
+## 2026-09-05 — return completed work to the conversation
+
+The first general inspection request returned only a queue receipt. Although
+the worker could finish and the work ledger could display its state, Igor did
+not deliver the result back into the conversation. This violated the expected
+conversational-worker contract: `QUEUED` is acknowledgment, not an answer.
+
+Jobs now retain their originating conversation ID. On every terminal outcome,
+the worker writes a durable assistant message containing the summary, status,
+job ID, resources, endpoints, evidence URI, and workspace URI. The dashboard
+detects the terminal transition and reloads the open conversation automatically.
+Local result: 26 tests pass. Live deployment is pending.

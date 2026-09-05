@@ -132,9 +132,11 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn("arn:aws:iam::aws:policy/PowerUserAccess", template)
         self.assertNotIn("Effect: Deny", template)
         self.assertIn("WORKLOAD_ROLE_ARN", template)
+        self.assertIn("CONVERSATIONS_TABLE", template)
 
     def test_general_agent_executes_changes_and_records_evidence(self):
         table = Mock()
+        conversations_table = Mock()
         s3 = Mock()
         bedrock = Mock()
         bedrock.converse.side_effect = [
@@ -214,6 +216,7 @@ class RunnerTests(unittest.TestCase):
             workload_role_arn="workload-role",
             workload_instance_profile="workload-profile",
             command_runner=command_runner,
+            conversations_table=conversations_table,
         )
         job_id = uuid4().hex
         item = {
@@ -222,6 +225,7 @@ class RunnerTests(unittest.TestCase):
             "objective": "Create and verify a service",
             "idea": "Create and verify a service",
             "model_id": "terra",
+            "conversation_id": "conversation-123",
         }
         evidence = {"job_id": job_id, "checks": []}
 
@@ -231,6 +235,10 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(2, len(result["commands"]))
         self.assertEqual(3, bedrock.converse.call_count)
         self.assertEqual(2, s3.put_object.call_count)
+        completion = conversations_table.put_item.call_args.kwargs["Item"]
+        self.assertEqual("conversation-123", completion["conversation_id"])
+        self.assertEqual("WORKING", completion["terminal_status"])
+        self.assertIn("Service created and verified.", completion["content_json"])
 
 
 if __name__ == "__main__":

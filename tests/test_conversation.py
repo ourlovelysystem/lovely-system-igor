@@ -178,6 +178,7 @@ class ConversationTests(unittest.TestCase):
             "Build a greeting service.",
             json.loads(invoked["body"])["idea"],
         )
+        self.assertEqual("abc", json.loads(invoked["body"])["conversation_id"])
 
 
 if __name__ == "__main__":

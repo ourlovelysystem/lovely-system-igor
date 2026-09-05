@@ -328,6 +328,7 @@ class Worker:
         workload_instance_profile: str = "",
         region: str = "us-east-1",
         command_runner: Any = execute_command,
+        conversations_table: Any = None,
     ) -> None:
         self.table = table
         self.bedrock = bedrock
@@ -340,6 +341,7 @@ class Worker:
         self.workload_instance_profile = workload_instance_profile
         self.region = region
         self.command_runner = command_runner
+        self.conversations_table = conversations_table
 
     def update(self, job_id: str, status: str, **fields: Any) -> None:
         values: dict[str, Any] = {":status": status, ":updated": now_iso()}
@@ -390,6 +392,48 @@ class Worker:
             ServerSideEncryption="AES256",
         )
         return f"s3://{self.evidence_bucket}/{key}"
+
+    def publish_completion(
+        self,
+        *,
+        item: dict[str, Any],
+        job_id: str,
+        status: str,
+        summary: str,
+        evidence_uri: str,
+        workspace_uri: str = "",
+        resources: list[str] | None = None,
+        public_endpoints: list[str] | None = None,
+        finished_at: str,
+    ) -> None:
+        conversation_id = item.get("conversation_id")
+        if not conversation_id or self.conversations_table is None:
+            return
+        lines = [summary.strip(), "", f"Status: {status}", f"Job ID: {job_id}"]
+        if resources:
+            lines.extend(["", "Resources:", *[f"- {value}" for value in resources]])
+        if public_endpoints:
+            lines.extend(["", "Endpoints:", *[f"- {value}" for value in public_endpoints]])
+        lines.extend(["", f"Evidence: {evidence_uri}"])
+        if workspace_uri:
+            lines.append(f"Workspace: {workspace_uri}")
+        self.conversations_table.put_item(
+            Item={
+                "conversation_id": conversation_id,
+                "record_key": f"MSG#{finished_at}#JOB#{job_id}",
+                "created_at": finished_at,
+                "role": "assistant",
+                "content_json": json.dumps([{"text": "\n".join(lines)}], separators=(",", ":")),
+                "job_id": job_id,
+                "terminal_status": status,
+            },
+            ConditionExpression="attribute_not_exists(record_key)",
+        )
+        self.conversations_table.update_item(
+            Key={"conversation_id": conversation_id, "record_key": "META"},
+            UpdateExpression="SET updated_at = :updated",
+            ExpressionAttributeValues={":updated": finished_at},
+        )
 
     @staticmethod
     def probe_public_endpoint(endpoint: str) -> dict[str, Any]:
@@ -698,6 +742,17 @@ evidence ran out. A model statement is never proof."""
                         "stage": "agent_execute",
                         "message": finish_request["summary"][:2000],
                     }
+                self.publish_completion(
+                    item=item,
+                    job_id=job_id,
+                    status=status,
+                    summary=finish_request["summary"],
+                    evidence_uri=evidence_uri,
+                    workspace_uri=workspace_uri,
+                    resources=finish_request["resources"],
+                    public_endpoints=finish_request["public_endpoints"],
+                    finished_at=finished_at,
+                )
                 self.update(job_id, status, **fields)
                 return evidence
 
@@ -717,6 +772,15 @@ evidence ran out. A model statement is never proof."""
             }
         )
         evidence_uri = self.put_evidence(job_id, evidence)
+        self.publish_completion(
+            item=item,
+            job_id=job_id,
+            status="INCOMPLETE",
+            summary=summary,
+            evidence_uri=evidence_uri,
+            workspace_uri=workspace_uri,
+            finished_at=finished_at,
+        )
         self.update(
             job_id,
             "INCOMPLETE",
@@ -823,6 +887,14 @@ evidence ran out. A model statement is never proof."""
             evidence["checks"].append({"check": "live_http_probe", **probe})
             evidence.update({"status": "WORKING", "finished_at": now_iso()})
             evidence_uri = self.put_evidence(job_id, evidence)
+            self.publish_completion(
+                item=item,
+                job_id=job_id,
+                status=status,
+                summary=failure["message"],
+                evidence_uri=evidence_uri,
+                finished_at=evidence["finished_at"],
+            )
             self.update(
                 job_id,
                 "WORKING",
@@ -870,6 +942,7 @@ def main() -> None:
         workload_role_arn=os.environ.get("WORKLOAD_ROLE_ARN", ""),
         workload_instance_profile=os.environ.get("WORKLOAD_INSTANCE_PROFILE", ""),
         region=os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1")),
+        conversations_table=boto3.resource("dynamodb").Table(os.environ["CONVERSATIONS_TABLE"]),
     )
     worker.run(job_id)
 

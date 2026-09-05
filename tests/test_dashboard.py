@@ -25,6 +25,8 @@ class DashboardTests(unittest.TestCase):
             result["body"],
         )
         self.assertIn("https://api.example.test", result["headers"]["content-security-policy"])
+        self.assertIn("jobStates", result["body"])
+        self.assertIn("await selectConversation(currentConversationId)", result["body"])
 
     def test_non_root_path_is_not_found(self):
         result = dashboard.handler({"rawPath": "/missing"}, None)

@@ -236,6 +236,8 @@ Resources:
         EnvironmentVariables:
           - Name: JOBS_TABLE
             Value: !Ref JobsTable
+          - Name: CONVERSATIONS_TABLE
+            Value: !Ref ConversationsTable
           - Name: EVIDENCE_BUCKET
             Value: !Ref EvidenceBucket
           - Name: GENERATED_EXECUTION_ROLE_ARN
