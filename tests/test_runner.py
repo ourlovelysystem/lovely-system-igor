@@ -2,6 +2,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src" / "worker"))
@@ -57,7 +58,26 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual("role-arn", function["Role"])
         self.assertNotIn("Environment", function)
 
+    def test_model_request_omits_unsupported_temperature(self):
+        bedrock = Mock()
+        bedrock.converse.return_value = {
+            "output": {
+                "message": {
+                    "content": [
+                        {
+                            "text": json.dumps(
+                                {"description": "Greeting", "app_py": VALID_SOURCE}
+                            )
+                        }
+                    ]
+                }
+            }
+        }
+        runner.model_request(bedrock, model_id="terra", idea="Build a greeting")
+        inference_config = bedrock.converse.call_args.kwargs["inferenceConfig"]
+        self.assertEqual({"maxTokens": 5000}, inference_config)
+        self.assertNotIn("temperature", inference_config)
+
 
 if __name__ == "__main__":
     unittest.main()
-

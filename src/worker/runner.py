@@ -165,7 +165,7 @@ APIs, classes, async functions, or third-party packages. Keep the implementation
         modelId=model_id,
         system=[{"text": system}],
         messages=[{"role": "user", "content": [{"text": idea}]}],
-        inferenceConfig={"maxTokens": 5000, "temperature": 0.1},
+        inferenceConfig={"maxTokens": 5000},
     )
     return parse_model_envelope(extract_text(result))
 
@@ -371,4 +371,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
