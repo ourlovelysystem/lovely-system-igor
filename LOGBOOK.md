@@ -28,3 +28,22 @@ Evidence was written to
 `s3://igor-evidencebucket-kuuvbcaqekxt/jobs/46174842e38840c9a103e9adb349f3f9/evidence.json`.
 The worker did not claim success. The unsupported `temperature` field was
 removed and covered by a regression test.
+
+## 2026-09-05 — first verified deployment
+
+After the account's first-use OpenAI model agreement was established, job
+`3df7104882d8405384eceeeae1fd011a` reached `WORKING`. Igor generated and
+deployed a Lambda, recorded evidence, and its live endpoint returned HTTP 200
+with `{"message": "Hello! Welcome to the greeting service."}`.
+
+## 2026-09-05 — conversational web interface
+
+The target was clarified: Igor is intended to be a general-purpose LLM, coding
+agent, and AWS infrastructure operator, reachable through a low-friction web
+interface and telephone conversation.
+
+This increment adds the first shared conversational core. An invited operator
+can hold a persistent Terra conversation in the browser. Terra may invoke the
+existing bounded build worker and read job status, but it receives no general
+AWS or GitHub authority in this increment. The dashboard displays durable job
+state and evidence rather than treating the model's statements as proof.

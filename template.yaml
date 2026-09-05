@@ -31,6 +31,27 @@ Resources:
       SSESpecification:
         SSEEnabled: true
 
+  ConversationsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: conversation_id
+          AttributeType: S
+        - AttributeName: record_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: conversation_id
+          KeyType: HASH
+        - AttributeName: record_key
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+
   EvidenceBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
@@ -226,6 +247,7 @@ Resources:
                 Action:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
+                  - dynamodb:Scan
                   - dynamodb:UpdateItem
                 Resource: !GetAtt JobsTable.Arn
               - Effect: Allow
@@ -271,13 +293,291 @@ Resources:
       InvokedViaFunctionUrl: true
       Principal: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
 
+  ConversationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ConverseAndUseBoundedTools
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-*:*
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt ConversationsTable.Arn
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: "*"
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt ControlFunction.Arn
+
+  ConversationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/conversation/
+      Handler: app.handler
+      Runtime: python3.12
+      Architectures:
+        - arm64
+      MemorySize: 512
+      Timeout: 90
+      Role: !GetAtt ConversationRole.Arn
+      Environment:
+        Variables:
+          CONVERSATIONS_TABLE: !Ref ConversationsTable
+          CONTROL_FUNCTION_NAME: !Ref ControlFunction
+          DEFAULT_MODEL_ID: !Ref DefaultModelId
+
+  OperatorPool:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName: !Sub ${AWS::StackName}-operators
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 7
+
+  OperatorClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref OperatorPool
+      ClientName: igor-dashboard
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  DashboardApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub ${AWS::StackName}-dashboard-api
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowHeaders:
+          - authorization
+          - content-type
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowOrigins:
+          - "*"
+        MaxAge: 3600
+
+  DashboardAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref DashboardApi
+      AuthorizerType: JWT
+      IdentitySource:
+        - $request.header.Authorization
+      JwtConfiguration:
+        Audience:
+          - !Ref OperatorClient
+        Issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${OperatorPool}
+      Name: igor-operators
+
+  DashboardIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref DashboardApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ControlFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  ConversationIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref DashboardApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ConversationFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  DashboardListJobsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DashboardApi
+      AuthorizationType: JWT
+      AuthorizerId: !Ref DashboardAuthorizer
+      RouteKey: GET /jobs
+      Target: !Sub integrations/${DashboardIntegration}
+
+  DashboardSubmitJobRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DashboardApi
+      AuthorizationType: JWT
+      AuthorizerId: !Ref DashboardAuthorizer
+      RouteKey: POST /jobs
+      Target: !Sub integrations/${DashboardIntegration}
+
+  DashboardGetJobRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DashboardApi
+      AuthorizationType: JWT
+      AuthorizerId: !Ref DashboardAuthorizer
+      RouteKey: GET /jobs/{job_id}
+      Target: !Sub integrations/${DashboardIntegration}
+
+  DashboardHealthRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DashboardApi
+      AuthorizationType: JWT
+      AuthorizerId: !Ref DashboardAuthorizer
+      RouteKey: GET /health
+      Target: !Sub integrations/${DashboardIntegration}
+
+  DashboardListConversationsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DashboardApi
+      AuthorizationType: JWT
+      AuthorizerId: !Ref DashboardAuthorizer
+      RouteKey: GET /conversations
+      Target: !Sub integrations/${ConversationIntegration}
+
+  DashboardCreateConversationRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DashboardApi
+      AuthorizationType: JWT
+      AuthorizerId: !Ref DashboardAuthorizer
+      RouteKey: POST /conversations
+      Target: !Sub integrations/${ConversationIntegration}
+
+  DashboardGetConversationRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DashboardApi
+      AuthorizationType: JWT
+      AuthorizerId: !Ref DashboardAuthorizer
+      RouteKey: GET /conversations/{conversation_id}
+      Target: !Sub integrations/${ConversationIntegration}
+
+  DashboardSendMessageRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DashboardApi
+      AuthorizationType: JWT
+      AuthorizerId: !Ref DashboardAuthorizer
+      RouteKey: POST /conversations/{conversation_id}/messages
+      Target: !Sub integrations/${ConversationIntegration}
+
+  DashboardStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref DashboardApi
+      StageName: $default
+      AutoDeploy: true
+
+  DashboardApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ControlFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${DashboardApi}/*
+
+  ConversationApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ConversationFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${DashboardApi}/*
+
+  DashboardFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/dashboard/
+      Handler: app.handler
+      Runtime: python3.12
+      Architectures:
+        - arm64
+      MemorySize: 128
+      Timeout: 5
+      Environment:
+        Variables:
+          DASHBOARD_API_URL: !GetAtt DashboardApi.ApiEndpoint
+          COGNITO_CLIENT_ID: !Ref OperatorClient
+          COGNITO_REGION: !Ref AWS::Region
+
+  DashboardUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: NONE
+      TargetFunctionArn: !GetAtt DashboardFunction.Arn
+
+  DashboardUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !Ref DashboardFunction
+      FunctionUrlAuthType: NONE
+      Principal: "*"
+
+  DashboardInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DashboardFunction
+      InvokedViaFunctionUrl: true
+      Principal: "*"
+
 Outputs:
   IgorUrl:
     Description: IAM-authenticated Igor control URL
     Value: !GetAtt ControlUrl.FunctionUrl
   JobsTableName:
     Value: !Ref JobsTable
+  ConversationsTableName:
+    Value: !Ref ConversationsTable
   EvidenceBucketName:
     Value: !Ref EvidenceBucket
   WorkerProjectName:
     Value: !Ref WorkerProject
+  DashboardUrl:
+    Description: Cognito-authenticated Igor operator dashboard
+    Value: !GetAtt DashboardUrl.FunctionUrl
+  DashboardApiUrl:
+    Value: !GetAtt DashboardApi.ApiEndpoint
+  OperatorUserPoolId:
+    Value: !Ref OperatorPool

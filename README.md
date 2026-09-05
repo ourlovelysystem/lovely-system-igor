@@ -1,7 +1,8 @@
 # Igor
 
-Igor is an AWS-resident coding worker. Give it an idea; it either returns a
-verified deployment or an honest failure record.
+Igor is an AWS-resident conversational coding worker. Talk through an idea,
+ask Igor to build it, and receive either a verified deployment or an honest
+failure record.
 
 This first vertical slice builds one kind of system: a dependency-free Python
 HTTP Lambda. It generates the handler with Amazon Bedrock, deploys it in a
@@ -23,7 +24,10 @@ JSON evidence record in S3. A model's claim is never accepted as proof.
 ## AWS components
 
 - Lambda Function URL: authenticated control API
-- DynamoDB: durable job record
+- Lambda Function URL: public dashboard shell with no AWS authority
+- Cognito and API Gateway: operator login and authenticated dashboard API
+- Lambda: persistent conversational tool loop
+- DynamoDB: durable conversations and job records
 - CodeBuild: isolated worker
 - Bedrock: configurable code-generation model
 - CloudFormation: generated workload deployment
@@ -31,9 +35,9 @@ JSON evidence record in S3. A model's claim is never accepted as proof.
 - CloudWatch: Lambda and CodeBuild logs
 - IAM: separate control, worker, deployment, and generated-app roles
 
-AgentCore is intentionally not in this first slice. CodeBuild is the safer
-execution boundary for generated work. An AgentCore orchestrator can be added
-later without changing the job or evidence contract.
+AgentCore is not yet in this slice. The conversation and tool contracts are
+kept separate from CodeBuild so the conversational runtime can move to
+AgentCore without allowing generated code to execute inside that runtime.
 
 ## Deploy
 
@@ -45,7 +49,17 @@ selected model. The default region is `us-east-1` and the default model is
 ./scripts/deploy.sh
 ```
 
-The script prints the authenticated Igor API URL. Submit an idea:
+The script prints the dashboard and authenticated CLI API URLs. Create the
+first invited dashboard operator, then open the dashboard URL:
+
+```bash
+./scripts/create-operator.sh you@example.com
+```
+
+Cognito emails a temporary password. The dashboard asks for a permanent
+password on first sign-in. Public account creation is disabled.
+
+The CLI remains available. Submit an idea:
 
 ```bash
 python3 -m pip install boto3
@@ -74,7 +88,11 @@ See [docs/architecture.md](docs/architecture.md) for the data flow and
 ## Current boundaries
 
 - One generated AWS Lambda per job; no arbitrary infrastructure yet.
+- The conversational interface has only two tools: submit a bounded build and
+  read a known job's status.
 - The generated handler may import only `json` and has no AWS permissions.
 - The worker reads this public repository at build time.
-- The control API uses AWS IAM signing; it is not public.
-- Deployment has not been claimed until it has been run in an AWS account.
+- The CLI control URL uses AWS IAM signing. The dashboard API requires a
+  Cognito token from an invited operator.
+- The dashboard shell is public static HTML. It has no AWS authority and cannot
+  submit or read jobs without an authenticated operator token.

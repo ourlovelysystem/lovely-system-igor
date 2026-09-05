@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Igor</title>
+  <style>
+    :root {
+      --ink: #f6f0e7; --muted: #aaa49a; --ground: #100f0d; --panel: #1a1815;
+      --line: #39342d; --orange: #ff982b; --green: #68d391; --red: #ff7169; --blue: #78b8ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; color: var(--ink); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      background: radial-gradient(circle at 78% -20%, #4a3218 0, transparent 38rem), linear-gradient(145deg, #151411, var(--ground) 45%);
+    }
+    button, input, textarea { font: inherit; } button { cursor: pointer; }
+    .shell { width: min(1240px, calc(100% - 28px)); margin: 0 auto; padding: 24px 0 50px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 20px; }
+    .brand { display: flex; align-items: baseline; gap: 14px; }
+    h1 { margin: 0; font: 850 clamp(2.2rem, 6vw, 4.6rem)/.9 system-ui, sans-serif; letter-spacing: -.075em; }
+    .brand span, .model { color: var(--orange); font-weight: 900; letter-spacing: .08em; }
+    .principle { max-width: 520px; color: var(--muted); text-align: right; line-height: 1.5; }
+    .panel { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--line); border-radius: 17px; box-shadow: 0 24px 80px #0006; }
+    .login { max-width: 520px; margin: 12vh auto 0; padding: 34px; }
+    h2 { margin: 0 0 8px; font: 750 1.25rem/1.2 system-ui, sans-serif; }
+    .subtle { color: var(--muted); line-height: 1.5; }
+    form { display: grid; gap: 14px; }
+    .login form { margin-top: 26px; }
+    label { display: grid; gap: 7px; color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; }
+    input, textarea { width: 100%; border: 1px solid var(--line); border-radius: 11px; color: var(--ink); background: #0d0d0c; padding: 13px 14px; outline: none; }
+    input:focus, textarea:focus { border-color: var(--orange); box-shadow: 0 0 0 3px #ff982b22; }
+    textarea { min-height: 86px; resize: vertical; line-height: 1.5; }
+    .primary { border: 0; border-radius: 10px; padding: 12px 17px; color: #1b1105; background: var(--orange); font-weight: 900; }
+    .primary:hover { filter: brightness(1.08); } .primary:disabled { cursor: wait; opacity: .55; }
+    .quiet { border: 1px solid var(--line); border-radius: 9px; padding: 9px 12px; color: var(--muted); background: transparent; }
+    .error { min-height: 1.3em; margin-top: 12px; color: var(--red); white-space: pre-wrap; }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+    .identity { color: var(--muted); font-size: .8rem; }
+    .workspace { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 12px; min-height: 650px; }
+    .sidebar { padding: 14px; display: flex; flex-direction: column; min-height: 0; }
+    .sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 4px 13px; }
+    .new-chat { border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: #0d0d0c; padding: 8px 10px; }
+    .conversation-list { display: grid; gap: 6px; overflow: auto; }
+    .conversation { border: 1px solid transparent; border-radius: 9px; padding: 11px; color: var(--muted); background: transparent; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .conversation:hover, .conversation.selected { color: var(--ink); border-color: var(--line); background: #0d0d0c; }
+    .chat { display: grid; grid-template-rows: auto minmax(360px, 1fr) auto; min-width: 0; overflow: hidden; }
+    .chat-head { display: flex; justify-content: space-between; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--line); }
+    .chat-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 800; }
+    .model { font-size: .72rem; flex: none; }
+    .messages { overflow: auto; padding: 24px clamp(16px, 5vw, 58px); display: flex; flex-direction: column; gap: 20px; }
+    .welcome { margin: auto; max-width: 560px; text-align: center; color: var(--muted); font: 500 1.05rem/1.7 system-ui, sans-serif; }
+    .message { max-width: 82%; }
+    .message.user { align-self: flex-end; }
+    .speaker { margin-bottom: 6px; color: var(--muted); font-size: .7rem; font-weight: 900; letter-spacing: .09em; }
+    .message.user .speaker { text-align: right; }
+    .bubble { border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; background: #0d0d0c; white-space: pre-wrap; font: 500 .98rem/1.58 system-ui, sans-serif; }
+    .message.user .bubble { border-color: #6b461f; background: #2b1d0f; }
+    .tools { display: grid; gap: 5px; margin-top: 8px; color: var(--blue); font-size: .74rem; }
+    .composer { border-top: 1px solid var(--line); padding: 16px; }
+    .composer form { grid-template-columns: 1fr auto; align-items: end; }
+    .composer button { min-height: 48px; }
+    details.ledger { margin-top: 12px; }
+    details.ledger summary { padding: 14px 18px; color: var(--muted); cursor: pointer; }
+    .jobs { display: grid; gap: 8px; padding: 0 14px 14px; }
+    .job { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: #0d0d0c; }
+    .job-top { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    .status { border: 1px solid currentColor; border-radius: 99px; padding: 3px 8px; font-size: .66rem; font-weight: 900; }
+    .working { color: var(--green); } .failed, .blocked, .incomplete { color: var(--red); } .queued, .running { color: var(--blue); }
+    .job-idea { margin: 9px 0; font: 600 .84rem/1.45 system-ui, sans-serif; }
+    .facts { color: var(--muted); font-size: .69rem; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .actions a, .actions button { border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; color: var(--ink); background: #171512; text-decoration: none; font-size: .7rem; }
+    .failure { margin-top: 9px; color: #ffc0bc; white-space: pre-wrap; font-size: .73rem; }
+    [hidden] { display: none !important; }
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 16px, 1240px); padding-top: 16px; }
+      header { display: block; } .principle { margin-top: 10px; text-align: left; }
+      .workspace { grid-template-columns: 1fr; }
+      .sidebar { max-height: 180px; } .chat { min-height: 620px; }
+      .message { max-width: 94%; } .composer form { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand"><h1>Igor</h1><span>RESIDENT</span></div>
+      <div class="principle">Conversation, code, and AWS operations—with evidence between a claim and the truth.</div>
+    </header>
+
+    <section id="loginView" class="panel login">
+      <h2>Operator sign in</h2>
+      <div class="subtle">Igor can create AWS resources. Access is restricted to invited operators.</div>
+      <form id="loginForm">
+        <label>Email<input id="email" type="email" autocomplete="username" required></label>
+        <label>Password<input id="password" type="password" autocomplete="current-password" required></label>
+        <button id="loginButton" class="primary" type="submit">Enter Igor</button>
+      </form>
+      <form id="newPasswordForm" hidden>
+        <label>Create permanent password<input id="newPassword" type="password" autocomplete="new-password" minlength="12" required></label>
+        <button class="primary" type="submit">Set password and enter</button>
+      </form>
+      <div id="loginError" class="error" role="alert"></div>
+    </section>
+
+    <main id="dashboardView" hidden>
+      <div class="toolbar"><div id="identity" class="identity"></div><button id="logoutButton" class="quiet" type="button">Sign out</button></div>
+      <section class="workspace">
+        <aside class="panel sidebar">
+          <div class="sidebar-head"><h2>Conversations</h2><button id="newConversation" class="new-chat" type="button">New</button></div>
+          <div id="conversationList" class="conversation-list"></div>
+        </aside>
+        <section class="panel chat">
+          <div class="chat-head"><div id="chatTitle" class="chat-title">New conversation</div><div class="model">GPT-5.6 TERRA</div></div>
+          <div id="messages" class="messages"><div class="welcome">Talk to Igor normally. Ask a question, develop an idea, or tell it to build a small service. It must distinguish conversation from completed work.</div></div>
+          <div class="composer">
+            <form id="messageForm">
+              <textarea id="message" maxlength="20000" placeholder="Talk to Igor…" required></textarea>
+              <button id="sendButton" class="primary" type="submit">Send</button>
+            </form>
+            <div id="messageError" class="error" role="alert"></div>
+          </div>
+        </section>
+      </section>
+      <details class="panel ledger"><summary><strong>Work ledger</strong> · <span id="refreshState">waiting</span></summary><div id="jobs" class="jobs"></div></details>
+    </main>
+  </div>
+
+  <script>window.IGOR_CONFIG=__IGOR_CONFIG__;</script>
+  <script>
+    (() => {
+      const config = window.IGOR_CONFIG;
+      const terminal = new Set(['WORKING', 'FAILED', 'BLOCKED', 'INCOMPLETE']);
+      const tokenKey = 'igor.idToken';
+      let challenge = null, timer = null, currentConversationId = null, conversations = [];
+      const $ = (id) => document.getElementById(id);
+      const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[character]);
+
+      async function cognito(action, payload) {
+        const result = await fetch(`https://cognito-idp.${config.region}.amazonaws.com/`, {
+          method:'POST', headers:{'content-type':'application/x-amz-json-1.1','x-amz-target':`AWSCognitoIdentityProviderService.${action}`}, body:JSON.stringify(payload)
+        });
+        const body = await result.json();
+        if (!result.ok) throw new Error(body.message || body.__type || `Sign-in failed (${result.status})`);
+        return body;
+      }
+      function tokenClaims(token) {
+        try {
+          const payload=token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/');
+          return JSON.parse(atob(payload.padEnd(Math.ceil(payload.length/4)*4,'=')));
+        } catch (_) { return {}; }
+      }
+      async function api(path, options={}) {
+        const result = await fetch(`${config.apiUrl}${path}`, {...options, headers:{authorization:`Bearer ${sessionStorage.getItem(tokenKey)}`,'content-type':'application/json',...(options.headers||{})}});
+        let body={}; try { body=await result.json(); } catch (_) { body={error:'The API returned an unreadable response.'}; }
+        if (result.status===401 || result.status===403) { signOut('Your session ended. Sign in again.'); throw new Error('Session ended'); }
+        if (!result.ok) throw new Error(body.error || `Request failed (${result.status})`);
+        return body;
+      }
+      function useSession(authentication) {
+        const token=authentication.IdToken; sessionStorage.setItem(tokenKey,token); const claims=tokenClaims(token);
+        $('identity').textContent=claims.email || claims['cognito:username'] || 'Authenticated operator';
+        $('loginView').hidden=true; $('dashboardView').hidden=false; $('loginError').textContent='';
+        loadConversations(); refreshJobs(); clearInterval(timer); timer=setInterval(refreshJobs,3000);
+      }
+      function signOut(message='') {
+        sessionStorage.removeItem(tokenKey); clearInterval(timer); currentConversationId=null;
+        $('dashboardView').hidden=true; $('loginView').hidden=false; $('loginForm').hidden=false; $('newPasswordForm').hidden=true; $('loginError').textContent=message;
+      }
+      function renderConversationList() {
+        $('conversationList').innerHTML=conversations.map((item)=>`<button type="button" class="conversation ${item.conversation_id===currentConversationId?'selected':''}" data-conversation="${escapeHtml(item.conversation_id)}">${escapeHtml(item.title||'New conversation')}</button>`).join('');
+      }
+      async function loadConversations(selectFirst=true) {
+        try {
+          const body=await api('/conversations'); conversations=body.conversations||[]; renderConversationList();
+          if (selectFirst && !currentConversationId && conversations.length) await selectConversation(conversations[0].conversation_id);
+        } catch (error) { $('messageError').textContent=error.message; }
+      }
+      function renderMessages(messages) {
+        if (!messages.length) { $('messages').innerHTML='<div class="welcome">Talk to Igor normally. Ask a question, develop an idea, or tell it to build a small service.</div>'; return; }
+        $('messages').innerHTML=messages.map((item)=>`<article class="message ${item.role==='user'?'user':'assistant'}"><div class="speaker">${item.role==='user'?'YOU':'IGOR'}</div><div class="bubble">${escapeHtml(item.text)}</div>${item.tools&&item.tools.length?`<div class="tools">${item.tools.map((name)=>`<span>tool: ${escapeHtml(name)}</span>`).join('')}</div>`:''}</article>`).join('');
+        $('messages').scrollTop=$('messages').scrollHeight;
+      }
+      async function selectConversation(id) {
+        currentConversationId=id; renderConversationList(); $('messageError').textContent='';
+        const body=await api(`/conversations/${id}`); $('chatTitle').textContent=body.conversation.title||'Conversation'; renderMessages(body.messages||[]);
+      }
+      function newConversation() {
+        currentConversationId=null; renderConversationList(); $('chatTitle').textContent='New conversation'; renderMessages([]); $('message').focus();
+      }
+      function appendPending(role,text,tools=[]) {
+        const welcome=$('messages').querySelector('.welcome'); if (welcome) welcome.remove();
+        const article=document.createElement('article'); article.className=`message ${role}`;
+        article.innerHTML=`<div class="speaker">${role==='user'?'YOU':'IGOR'}</div><div class="bubble">${escapeHtml(text)}</div>${tools.length?`<div class="tools">${tools.map((tool)=>`<span>${escapeHtml(tool)}</span>`).join('')}</div>`:''}`;
+        $('messages').appendChild(article); $('messages').scrollTop=$('messages').scrollHeight; return article;
+      }
+      async function sendMessage(text) {
+        if (!currentConversationId) { const created=await api('/conversations',{method:'POST',body:'{}'}); currentConversationId=created.conversation_id; }
+        appendPending('user',text); const pending=appendPending('assistant','Thinking…');
+        try {
+          const result=await api(`/conversations/${currentConversationId}/messages`,{method:'POST',body:JSON.stringify({message:text})});
+          pending.remove(); const toolLines=(result.tool_events||[]).map((tool)=>{
+            const job=tool.result&&tool.result.job_id?` · job ${tool.result.job_id}`:''; return `${tool.name}: ${tool.status}${job}`;
+          });
+          appendPending('assistant',result.text,toolLines); await loadConversations(false); const selected=conversations.find((item)=>item.conversation_id===currentConversationId); if(selected)$('chatTitle').textContent=selected.title;
+        } catch (error) {
+          pending.remove();
+          throw error;
+        }
+      }
+      function jobCard(job) {
+        const status=escapeHtml(job.status||'UNKNOWN'); const endpoint=typeof job.endpoint==='string'&&job.endpoint.startsWith('https://')?job.endpoint:'';
+        const failure=job.failure&&(job.failure.message||JSON.stringify(job.failure));
+        return `<article class="job"><div class="job-top"><strong>${escapeHtml(job.job_id)}</strong><span class="status ${status.toLowerCase()}">${status}</span></div><div class="job-idea">${escapeHtml(job.idea)}</div><div class="facts">stage: ${escapeHtml(job.stage||'queued')} · updated: ${escapeHtml(job.updated_at||job.created_at)}</div>${failure?`<div class="failure">${escapeHtml(failure)}</div>`:''}<div class="actions">${endpoint?`<a href="${escapeHtml(endpoint)}" target="_blank" rel="noopener">Open deployment</a>`:''}<button type="button" data-copy="${escapeHtml(job.job_id)}">Copy job ID</button>${job.evidence_uri?`<button type="button" data-copy="${escapeHtml(job.evidence_uri)}">Copy evidence URI</button>`:''}</div></article>`;
+      }
+      async function refreshJobs() {
+        if ($('dashboardView').hidden) return;
+        try { const body=await api('/jobs'); const jobs=body.jobs||[]; $('jobs').innerHTML=jobs.length?jobs.map(jobCard).join(''):'<div class="subtle">No jobs yet.</div>'; const active=jobs.filter((job)=>!terminal.has(job.status)).length; $('refreshState').textContent=active?`${active} active`:'current'; }
+        catch (error) { if(!$('dashboardView').hidden)$('refreshState').textContent=error.message; }
+      }
+
+      $('loginForm').addEventListener('submit',async(event)=>{ event.preventDefault(); $('loginButton').disabled=true; $('loginError').textContent=''; try { const email=$('email').value.trim(); const result=await cognito('InitiateAuth',{AuthFlow:'USER_PASSWORD_AUTH',ClientId:config.clientId,AuthParameters:{USERNAME:email,PASSWORD:$('password').value}}); if(result.ChallengeName==='NEW_PASSWORD_REQUIRED'){challenge={session:result.Session,username:result.ChallengeParameters.USER_ID_FOR_SRP||email};$('loginForm').hidden=true;$('newPasswordForm').hidden=false;$('newPassword').focus();}else useSession(result.AuthenticationResult); } catch(error){$('loginError').textContent=error.message;} finally{$('loginButton').disabled=false;} });
+      $('newPasswordForm').addEventListener('submit',async(event)=>{ event.preventDefault(); $('loginError').textContent=''; try { const result=await cognito('RespondToAuthChallenge',{ChallengeName:'NEW_PASSWORD_REQUIRED',ClientId:config.clientId,Session:challenge.session,ChallengeResponses:{USERNAME:challenge.username,NEW_PASSWORD:$('newPassword').value}}); useSession(result.AuthenticationResult); } catch(error){$('loginError').textContent=error.message;} });
+      $('messageForm').addEventListener('submit',async(event)=>{ event.preventDefault(); const text=$('message').value.trim(); if(!text)return; $('sendButton').disabled=true; $('messageError').textContent=''; $('message').value=''; try { await sendMessage(text); await refreshJobs(); } catch(error){$('messageError').textContent=error.message;} finally{$('sendButton').disabled=false;$('message').focus();} });
+      $('message').addEventListener('keydown',(event)=>{ if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$('messageForm').requestSubmit();} });
+      $('newConversation').addEventListener('click',newConversation);
+      $('conversationList').addEventListener('click',(event)=>{const id=event.target.dataset&&event.target.dataset.conversation;if(id)selectConversation(id).catch((error)=>{$('messageError').textContent=error.message;});});
+      $('jobs').addEventListener('click',async(event)=>{const value=event.target.dataset&&event.target.dataset.copy;if(!value)return;await navigator.clipboard.writeText(value);const previous=event.target.textContent;event.target.textContent='Copied';setTimeout(()=>{event.target.textContent=previous;},900);});
+      $('logoutButton').addEventListener('click',()=>signOut());
+      const existing=sessionStorage.getItem(tokenKey),claims=existing?tokenClaims(existing):{}; if(existing&&claims.exp&&claims.exp*1000>Date.now()+30000)useSession({IdToken:existing});else signOut();
+    })();
+  </script>
+</body>
+</html>

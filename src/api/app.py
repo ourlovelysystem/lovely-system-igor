@@ -1,4 +1,8 @@
-"""Igor's small, IAM-authenticated job control API."""
+"""Igor's small job control API.
+
+The same handler sits behind an IAM-authenticated Function URL for CLI use and
+a Cognito-authenticated HTTP API for the operator dashboard.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +17,7 @@ from typing import Any
 
 TERMINAL_STATES = {"WORKING", "FAILED", "BLOCKED", "INCOMPLETE"}
 MAX_IDEA_LENGTH = 10_000
+MAX_LISTED_JOBS = 100
 
 
 def now_iso() -> str:
@@ -48,6 +53,25 @@ def _request(event: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     if not isinstance(body, dict):
         raise ValueError("request body must be a JSON object")
     return method, path.rstrip("/") or "/", body
+
+
+def _list_jobs(table: Any) -> list[dict[str, Any]]:
+    """Return the newest jobs from this intentionally small pilot table."""
+    items: list[dict[str, Any]] = []
+    start_key: dict[str, Any] | None = None
+
+    while len(items) < MAX_LISTED_JOBS:
+        request: dict[str, Any] = {"Limit": MAX_LISTED_JOBS - len(items)}
+        if start_key:
+            request["ExclusiveStartKey"] = start_key
+        page = table.scan(**request)
+        items.extend(page.get("Items", []))
+        start_key = page.get("LastEvaluatedKey")
+        if not start_key:
+            break
+
+    items.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return items[:MAX_LISTED_JOBS]
 
 
 def handle(
@@ -114,6 +138,9 @@ def handle(
         )
         return response(202, {"job_id": job_id, "status": "QUEUED", "build_id": build_id})
 
+    if method == "GET" and path == "/jobs":
+        return response(200, {"jobs": _list_jobs(table)})
+
     if method == "GET" and path.startswith("/jobs/"):
         job_id = path.removeprefix("/jobs/")
         if not job_id or "/" in job_id:
@@ -141,4 +168,3 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         project_name=os.environ["WORKER_PROJECT"],
         default_model_id=os.environ["DEFAULT_MODEL_ID"],
     )
-

@@ -50,7 +50,31 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(200, result["statusCode"])
         self.assertEqual("WORKING", json.loads(result["body"])["status"])
 
+    def test_list_returns_newest_jobs_first(self):
+        self.table.scan.return_value = {
+            "Items": [
+                {"job_id": "old", "created_at": "2026-09-03T00:00:00+00:00"},
+                {"job_id": "new", "created_at": "2026-09-04T00:00:00+00:00"},
+            ]
+        }
+        result = self.call("GET", "/jobs")
+        self.assertEqual(200, result["statusCode"])
+        jobs = json.loads(result["body"])["jobs"]
+        self.assertEqual(["new", "old"], [job["job_id"] for job in jobs])
+
+    def test_list_follows_scan_pages(self):
+        self.table.scan.side_effect = [
+            {
+                "Items": [{"job_id": "one", "created_at": "2026-09-03T00:00:00+00:00"}],
+                "LastEvaluatedKey": {"job_id": "one"},
+            },
+            {"Items": [{"job_id": "two", "created_at": "2026-09-04T00:00:00+00:00"}]},
+        ]
+        result = self.call("GET", "/jobs")
+        self.assertEqual(200, result["statusCode"])
+        jobs = json.loads(result["body"])["jobs"]
+        self.assertEqual(["two", "one"], [job["job_id"] for job in jobs])
+
 
 if __name__ == "__main__":
     unittest.main()
-

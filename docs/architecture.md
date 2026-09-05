@@ -2,15 +2,27 @@
 
 ## Request path
 
-1. An IAM-authenticated caller submits an idea to the control Lambda.
-2. The control Lambda writes a `QUEUED` record and starts CodeBuild.
-3. The worker changes the job to `RUNNING` and asks Bedrock for `app.py`.
-4. Igor parses and statically validates the generated source without executing it.
-5. Igor uploads the source bundle and creates a per-job CloudFormation stack.
-6. Igor probes the stack's live Function URL.
-7. Igor writes evidence to S3, then sets `WORKING`, `FAILED`, or `BLOCKED`.
+1. An operator signs in to the dashboard through Cognito, or uses the
+   IAM-authenticated CLI.
+2. API Gateway validates dashboard tokens before invoking Igor.
+3. The conversational Lambda loads durable context, calls Terra, and may invoke
+   the bounded build tool when the operator explicitly requests execution.
+4. The control Lambda writes a `QUEUED` record and starts CodeBuild.
+5. The worker changes the job to `RUNNING` and asks Bedrock for `app.py`.
+6. Igor parses and statically validates the generated source without executing it.
+7. Igor uploads the source bundle and creates a per-job CloudFormation stack.
+8. Igor probes the stack's live Function URL.
+9. Igor writes evidence to S3, then sets `WORKING`, `FAILED`, or `BLOCKED`.
 
 ## Trust boundaries
+
+The public dashboard Lambda serves only static HTML and configuration; it has
+no access to jobs, conversations, or deployment services. Cognito disallows
+public sign-up, and API Gateway admits only tokens issued to invited operators.
+The separate IAM Function URL preserves scripted access.
+
+The conversational Lambda can call Bedrock, store conversations, and invoke the
+control Lambda. It cannot deploy workloads directly.
 
 The control Lambda can create jobs but cannot deploy workloads. The CodeBuild
 worker can ask Bedrock and operate only Igor job stacks. CloudFormation assumes
@@ -33,4 +45,3 @@ executes for the first time in the generated Lambda's minimal role.
 
 The evidence object records timestamps, model ID, source SHA-256, stack ID,
 endpoint, probe status, and a bounded response excerpt.
-

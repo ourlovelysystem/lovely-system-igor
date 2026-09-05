@@ -33,4 +33,17 @@ igor_url="$(aws cloudformation describe-stacks \
   --query 'Stacks[0].Outputs[?OutputKey==`IgorUrl`].OutputValue' \
   --output text)"
 
+dashboard_url="$(aws cloudformation describe-stacks \
+  --stack-name "$stack_name" \
+  --region "$region" \
+  --query 'Stacks[0].Outputs[?OutputKey==`DashboardUrl`].OutputValue' \
+  --output text)"
+
 echo "Igor deployed: $igor_url"
+echo "Igor dashboard: $dashboard_url"
+
+if [[ -n "${IGOR_OPERATOR_EMAIL:-}" ]]; then
+  "$script_dir/create-operator.sh" "$IGOR_OPERATOR_EMAIL"
+else
+  echo "Create a dashboard operator: ./scripts/create-operator.sh you@example.com"
+fi
