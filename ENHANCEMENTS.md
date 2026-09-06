@@ -24,6 +24,9 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 | Release | Outcome | Included enhancements | Status | Deployed commit |
 | --- | --- | --- | --- | --- |
 | Upload experience v2 | Faster, inspectable uploads that survive conversation navigation safely | IGOR-001, IGOR-002, IGOR-003, IGOR-004, IGOR-005 | PROPOSED | — |
+| Multimodal conversations v1 | Understand the operator's screenshots, images, PDFs, and uploaded files | IGOR-006 | IN PROGRESS | — |
+| Live directed work v1 | Make coding and infrastructure work inspectable and steerable while it runs | IGOR-008, IGOR-011, IGOR-012 | PROPOSED | — |
+| Connected capabilities v1 | Research the web, use authorized applications, and create reusable artifacts | IGOR-007, IGOR-009, IGOR-010 | PROPOSED | — |
 
 ## Enhancements
 
@@ -106,6 +109,120 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
     completed attachment.
   - Canceling aborts the browser request and the S3 multipart upload, and records
     a terminal attachment state.
+
+### IGOR-006 — Direct multimodal file understanding
+
+- Status: `IN PROGRESS`
+- Candidate release: Multimodal conversations v1
+- Comparison capability: Read screenshots, images, PDFs, and uploaded files
+  directly.
+- Current state: Small supported images and documents can be loaded from private
+  S3 into the current Bedrock request. Large and unsupported files are passed by
+  private S3 location to the worker. Image understanding has been observed in
+  deployment; the complete file matrix has not.
+- Intended outcome: The operator can attach a supported file and receive an
+  answer grounded in its actual contents, regardless of whether the conversation
+  model or worker performs the inspection.
+- Acceptance evidence:
+  - Live tests cover screenshots, common image formats, PDFs, text documents,
+    structured data, and a file too large for direct model input.
+  - Igor identifies which component inspected each file and reports unsupported,
+    corrupt, encrypted, or truncated input plainly.
+  - File-derived claims cite the filename and a useful location such as page,
+    row range, sheet, or section when the format permits it.
+
+### IGOR-007 — Web research with linked sources
+
+- Status: `READY`
+- Candidate release: Connected capabilities v1
+- Comparison capability: Search the web and provide linked sources.
+- Observed problem: Igor has no dedicated web retrieval and citation path.
+- Intended outcome: Igor can research current public information and return
+  claims with inspectable source links.
+- Acceptance evidence:
+  - A current-information request produces working links to the supporting pages.
+  - Igor distinguishes sourced facts, inference, and unavailable evidence.
+  - Retrieved content is treated as untrusted input rather than instructions.
+
+### IGOR-008 — Interactive code workspace
+
+- Status: `IN PROGRESS`
+- Candidate release: Live directed work v1
+- Comparison capability: Inspect, edit, and test code in a workspace while
+  showing the resulting file changes.
+- Current state: The isolated worker can clone a repository, edit it, run
+  commands, test changes, archive the workspace, and use GitHub credentials. The
+  dashboard does not yet provide an interactive workspace or rendered diff.
+- Intended outcome: The operator can see the repository, commands, tests, and
+  proposed changes associated with a job before or after publication.
+- Acceptance evidence:
+  - Every coding job identifies its repository and starting revision.
+  - The dashboard exposes changed files, a readable diff, commands, and test
+    results without requiring access to the CodeBuild container.
+  - Published changes identify the resulting branch or commit.
+
+### IGOR-009 — Authorized applications and browser sessions
+
+- Status: `PROPOSED`
+- Candidate release: Connected capabilities v1
+- Comparison capability: Use connected applications and authenticated browser
+  sessions.
+- Open design decision: Define which applications are useful and whether each
+  uses an API connector, delegated credentials, or an interactive browser.
+- Intended outcome: Igor can perform operator-directed work in approved external
+  services without asking the operator to copy credentials into chat.
+- Acceptance evidence:
+  - Every connection identifies its granted permissions and authenticated
+    identity.
+  - Igor requests explicit direction before externally consequential writes.
+  - Revocation stops new access, and actions retain an inspectable audit record.
+
+### IGOR-010 — Create and preview reusable artifacts
+
+- Status: `READY`
+- Candidate release: Connected capabilities v1
+- Comparison capability: Create and preview documents, spreadsheets,
+  presentations, and images.
+- Intended outcome: Igor produces downloadable, visually inspectable artifacts
+  rather than only describing how to create them.
+- Acceptance evidence:
+  - Live tests create and preview a document, spreadsheet, presentation, and
+    image.
+  - Structured artifacts remain editable in their native formats.
+  - Igor reports the durable location and revision of each completed artifact.
+
+### IGOR-011 — Visible work while a job runs
+
+- Status: `IN PROGRESS`
+- Candidate release: Live directed work v1
+- Comparison capability: Keep the operator informed while working instead of
+  merely returning a job ID.
+- Current state: The worker records durable stage, command purpose, round, and
+  completed-command count; the dashboard polls and displays them. A complete
+  live acceptance test remains outstanding.
+- Intended outcome: The conversation itself shows what Igor is doing, what has
+  completed, what is blocked, and what remains.
+- Acceptance evidence:
+  - A multi-step live job displays meaningful progress before terminal status.
+  - Updates correspond to durable worker state rather than invented model prose.
+  - Failures identify the active stage and last completed action.
+
+### IGOR-012 — Mid-task operator steering
+
+- Status: `PROPOSED`
+- Candidate release: Live directed work v1
+- Comparison capability: Accept corrections while a task is underway.
+- Observed problem: A submitted worker job currently runs from one fixed
+  objective; a correction becomes a separate conversation turn or replacement
+  job rather than input to the active job.
+- Intended outcome: The operator can amend, pause, resume, or cancel active work,
+  and Igor acknowledges the instruction at a defined execution boundary.
+- Acceptance evidence:
+  - The dashboard accepts a correction while a multi-step job is running.
+  - The worker records when it received and applied or rejected the correction.
+  - Superseded work does not continue making changes after cancellation.
+  - The terminal evidence distinguishes the original objective from later
+    operator instructions.
 
 ## Adding an enhancement
 
