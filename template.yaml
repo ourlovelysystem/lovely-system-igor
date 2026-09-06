@@ -12,6 +12,13 @@ Parameters:
   SourceRevision:
     Type: String
     Default: main
+  GitHubAppSecretName:
+    Type: String
+    Default: ""
+    Description: Optional Secrets Manager secret containing app_id, installation_id, and private_key
+
+Conditions:
+  HasGitHubAppCredentials: !Not [!Equals [!Ref GitHubAppSecretName, ""]]
 
 Resources:
   JobsTable:
@@ -252,6 +259,11 @@ Resources:
             Value: !Ref SourceRepository
           - Name: IGOR_SOURCE_REVISION
             Value: !Ref SourceRevision
+          - !If
+            - HasGitHubAppCredentials
+            - Name: GITHUB_APP_SECRET_NAME
+              Value: !Ref GitHubAppSecretName
+            - !Ref AWS::NoValue
       Source:
         Type: NO_SOURCE
         BuildSpec: |
@@ -261,6 +273,7 @@ Resources:
               commands:
                 - git clone --no-checkout "$IGOR_SOURCE_REPOSITORY" /tmp/igor
                 - git -C /tmp/igor checkout "$IGOR_SOURCE_REVISION"
+                - python3 /tmp/igor/scripts/github-app-credential.py configure
             build:
               commands:
                 - PYTHONPATH=/tmp/igor/src/worker python3 /tmp/igor/src/worker/runner.py

@@ -10,6 +10,7 @@ region="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 model_id="${IGOR_MODEL_ID:-global.openai.gpt-5.6-terra}"
 source_repository="${IGOR_SOURCE_REPOSITORY:-https://github.com/ourlovelysystem/lovely-system-igor.git}"
 source_revision="${IGOR_SOURCE_REVISION:-$(git rev-parse HEAD 2>/dev/null || echo main)}"
+github_app_secret_name="${IGOR_GITHUB_APP_SECRET_NAME:-}"
 
 command -v aws >/dev/null || { echo "AWS CLI is required" >&2; exit 1; }
 command -v sam >/dev/null || { echo "AWS SAM CLI is required" >&2; exit 1; }
@@ -25,7 +26,8 @@ sam deploy \
   --parameter-overrides \
     "DefaultModelId=$model_id" \
     "SourceRepository=$source_repository" \
-    "SourceRevision=$source_revision"
+    "SourceRevision=$source_revision" \
+    "GitHubAppSecretName=$github_app_secret_name"
 
 igor_url="$(aws cloudformation describe-stacks \
   --stack-name "$stack_name" \

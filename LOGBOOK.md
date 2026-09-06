@@ -91,3 +91,16 @@ the worker writes a durable assistant message containing the summary, status,
 job ID, resources, endpoints, evidence URI, and workspace URI. The dashboard
 detects the terminal transition and reloads the open conversation automatically.
 Local result: 26 tests pass. Live deployment is pending.
+
+## 2026-09-06 — give Igor an independent GitHub identity
+
+Igor could modify a cloned repository inside an isolated job, but it could not
+publish those changes because the worker had no GitHub identity. GitHub App
+authentication is now supported. The App private key remains in AWS Secrets
+Manager; the worker exchanges it for a one-hour installation token only when
+Git requests credentials. The token is not embedded in a remote URL or archived
+with the job workspace. A setup script stores the App identifiers and private
+key, and deployment enables the configured secret for future workers.
+
+Local result: 28 tests pass. GitHub App creation, installation, secret setup,
+deployment, and live push verification are pending.

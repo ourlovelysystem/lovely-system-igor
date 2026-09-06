@@ -71,6 +71,23 @@ Check the returned job ID:
 python3 scripts/igor.py --url "$IGOR_URL" status JOB_ID
 ```
 
+## GitHub identity
+
+Igor can authenticate as a GitHub App. Create and install an App with repository
+**Contents: Read and write** permission (and **Workflows: Read and write** only if
+Igor must change files under `.github/workflows`). Store a JSON secret in AWS
+Secrets Manager containing `app_id`, `installation_id`, and `private_key`, then
+store and deploy it with:
+
+```bash
+./scripts/set-github-app-secret.sh APP_ID INSTALLATION_ID path/to/app-private-key.pem
+IGOR_GITHUB_APP_SECRET_NAME=igor/github-app ./scripts/deploy.sh
+```
+
+The CodeBuild worker exchanges the App key for a one-hour installation token
+when Git requests credentials. The token is not embedded in the repository URL
+or persisted in the workspace archive.
+
 ## Develop
 
 ```bash
