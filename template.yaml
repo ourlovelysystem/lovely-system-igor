@@ -485,6 +485,9 @@ Resources:
                 - Name: request
                   SlotTypeName: AMAZON.AlphaNumeric
                   ValueElicitationSetting: {SlotConstraint: Optional}
+              SlotPriorities:
+                - Priority: 1
+                  SlotName: request
               FulfillmentCodeHook: {Enabled: true}
             - Name: FallbackIntent
               ParentIntentSignature: AMAZON.FallbackIntent
