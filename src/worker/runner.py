@@ -674,6 +674,8 @@ evidence ran out. A model statement is never proof."""
                 raise ValueError("every published revision requires repository, branch, and commit")
             if not all(isinstance(revision[key], str) and revision[key] for key in revision):
                 raise ValueError("published revision values must be non-empty strings")
+            if not re.fullmatch(r"[0-9a-fA-F]{40}", revision["commit"]):
+                raise ValueError("published commit must be a full 40-character SHA")
         for claim in deployment_claims:
             if not isinstance(claim, dict) or set(claim) != {
                 "stack", "region", "repository", "branch", "source_revision"

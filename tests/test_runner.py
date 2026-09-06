@@ -200,6 +200,21 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual("independent_git_remote_ref", result["check"])
         self.assertEqual("git", run.call_args.args[0][0])
 
+    def test_working_rejects_non_full_published_commit_before_remote_check(self):
+        commands = [
+            {"command_id": "cmd-001", "command": "git commit -am update", "purpose": "Commit", "category": "change", "exit_code": 0},
+            {"command_id": "cmd-002", "command": "git push origin main", "purpose": "Push", "category": "change", "exit_code": 0},
+            {"command_id": "cmd-003", "command": "git ls-remote origin refs/heads/main", "purpose": "Verify remote", "category": "verify", "exit_code": 0},
+        ]
+        finish = {
+            "status": "WORKING", "summary": "Published.", "changes_made": True,
+            "evidence_command_ids": ["cmd-003"], "resources": [], "public_endpoints": [],
+            "published_revisions": [{"repository": "https://github.com/ourlovelysystem/lovely-system-igor.git", "branch": "main", "commit": "abc123"}],
+            "deployment_claims": [], "limitations": [],
+        }
+        with self.assertRaisesRegex(ValueError, "full 40-character SHA"):
+            runner.Worker._validate_finish(finish, commands, "Push the change to main")
+
     def test_published_revision_rejects_remote_branch_mismatch(self):
         completed = Mock(returncode=0, stdout="b" * 40 + "\trefs/heads/main\n", stderr="")
         revision = {
