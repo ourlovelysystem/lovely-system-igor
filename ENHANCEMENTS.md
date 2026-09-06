@@ -24,7 +24,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 | Release | Outcome | Included enhancements | Status | Deployed commit |
 | --- | --- | --- | --- | --- |
 | Upload experience v2 | Faster, inspectable uploads that survive conversation navigation safely | IGOR-001, IGOR-002, IGOR-003, IGOR-004, IGOR-005 | PROPOSED | — |
-| Multimodal conversations v1 | Understand the operator's screenshots, images, PDFs, and uploaded files | IGOR-006 | IN PROGRESS | — |
+| Multimodal conversations v1 | Understand the operator's screenshots, images, PDFs, and uploaded files | IGOR-006 | RELEASED | `f6b26240103826f9392b14ef02c4a576df208b44` |
 | Live directed work v1 | Make coding and infrastructure work inspectable, steerable, and recoverable across jobs | IGOR-008, IGOR-011, IGOR-012, IGOR-013 | IN PROGRESS | Recorded in deployed stack SourceRevision |
 | Responsive execution v1 | Reduce visible latency and avoid unnecessary worker starts without sacrificing evidence | IGOR-014, IGOR-015, IGOR-016, IGOR-017 | READY | — |
 | Connected capabilities v1 | Research the web, use authorized applications, and create reusable artifacts | IGOR-007, IGOR-009, IGOR-010 | PROPOSED | — |
@@ -113,49 +113,81 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 
 ### IGOR-006 — Direct multimodal file understanding
 
-- Status: `IN PROGRESS`
+- Status: `RELEASED`
 - Candidate release: Multimodal conversations v1
 - Comparison capability: Read screenshots, images, PDFs, and uploaded files
   directly.
-- Current state: Small supported images and documents can be loaded from private
+- Released behavior: Small supported images and documents are loaded from private
   S3 into the current Bedrock request. Large and unsupported files are passed by
-  private S3 location to the worker. Image understanding has been observed in
-  deployment; the complete file matrix has not.
+  private S3 location to the execution worker. The deployed `igor` stack was
+  independently read on 2026-09-06 as `UPDATE_COMPLETE` with SourceRevision
+  `f6b26240103826f9392b14ef02c4a576df208b44`.
 - Intended outcome: The operator can attach a supported file and receive an
   answer grounded in its actual contents, regardless of whether the conversation
   model or worker performs the inspection.
 - Acceptance evidence:
   - Live tests cover screenshots, common image formats, PDFs, text documents,
-    structured data, and a file too large for direct model input.
+    structured data, HTML, and a file too large for direct model input.
   - Igor identifies which component inspected each file and reports unsupported,
     corrupt, encrypted, or truncated input plainly.
   - File-derived claims cite the filename and a useful location such as page,
     row range, sheet, or section when the format permits it.
 
-- Live matrix evidence (2026-09-06; deployed revision `f1173cc815f324dc18730603afce8776f3229bad`):
-  - Screenshot `screenshot.png`: **inspected successfully** by `conversation-model`;
-    response cited `screenshot.png` and read exact visible text `SCREENSHOT OK`
-    (live conversation `matrix3501acc5593c4c0ea1b3414cd5b2a459`).
-  - Common images: `photo.jpg` was **inspected successfully** by
-    `conversation-model` (`JPEG_OK`); `graphic.webp` was **inspected successfully**
-    by `conversation-model` (`WEBP_OK`); and `animation.gif` was **inspected
-    successfully** after the GIF89a regression correction by `conversation-model`
-    (`GIF_OK`, conversation `matrix7e0f7e5065d4424dac2d8abea2f8e4de`). Each live
-    response named the file and component. The initial GIF89a run was concretely
-    diagnosed as a bad signature-routing defect, fixed and retested.
-  - `report.pdf` (PDF; worker job `c5c8f8b5a40548129691c1ed93fcdb0c`),
-    `memo.md` (text document; `a414faa08da04fb497802ab645385c68`),
-    `inventory.csv` (structured data; `b41cab0429c646d389a92c0339f5ab8c`),
-    `page.html` (text document; `c27ac35ee8b54483aeac4fd2955d425d`), and
-    `large.png` (20,837,457 bytes, above the 3,500,000-byte direct-image limit;
-    `73690a7045e54860887ecc537460ae8f`) were live-uploaded to private S3 and
-    correctly routed to `execution-worker`. The live conversation responses named
-    the component and queued job IDs. At recording time those jobs remained
-    `QUEUED`; they have not produced a file inspection or a concrete unsupported
-    result. They therefore do **not** satisfy the matrix acceptance criterion.
-  - Matrix command evidence is retained in execution records `cmd-019`, `cmd-020`,
-    and `cmd-023`; attachment keys are private `attachments/live-matrix/...` S3
-    objects. This item remains IN PROGRESS and is not released.
+- Live matrix evidence (2026-09-06):
+  - Screenshot `screenshot.png`: **inspected successfully** by
+    `conversation-model`; the live response cited `screenshot.png` and read
+    exact visible text `SCREENSHOT OK` (conversation
+    `matrix3501acc5593c4c0ea1b3414cd5b2a459`).
+  - Common images: `photo.jpg` (**inspected successfully**, `JPEG_OK`),
+    `graphic.webp` (**inspected successfully**, `WEBP_OK`), and `animation.gif`
+    (**inspected successfully**, `GIF_OK`) were inspected by
+    `conversation-model`. Each live response named the file and component; the
+    initial GIF89a signature-routing defect was concretely diagnosed, fixed, and
+    retested (conversation `matrix7e0f7e5065d4424dac2d8abea2f8e4de`).
+  - PDF `report.pdf`: execution worker job
+    `c5c8f8b5a40548129691c1ed93fcdb0c` reached durable `stage=complete`
+    (terminal status `WORKING`) with evidence
+    `s3://igor-evidencebucket-kuuvbcaqekxt/jobs/c5c8f8b5a40548129691c1ed93fcdb0c/evidence.json`.
+    It reported the page-one text `PDFDOC OK PAGE ONE` and a **concrete
+    unsupported/non-conformant result**: the 396-byte PDF has no `xref` or
+    `startxref`; `/Encrypt` is absent and it ends in `%%EOF`. The worker named
+    itself and cited page 1; parser/renderer availability was explicitly recorded
+    as a limitation.
+  - Text document `memo.md`: execution worker job
+    `a414faa08da04fb497802ab645385c68` reached durable `stage=complete`
+    (terminal status `WORKING`) with evidence
+    `s3://igor-evidencebucket-kuuvbcaqekxt/jobs/a414faa08da04fb497802ab645385c68/evidence.json`.
+    It successfully inspected all 32 bytes and reported `TEXTDOC OK` at heading
+    `# Memo` / section one.
+  - Structured data `inventory.csv`: execution worker job
+    `b41cab0429c646d389a92c0339f5ab8c` reached durable `stage=complete`
+    (terminal status `WORKING`) with evidence
+    `s3://igor-evidencebucket-kuuvbcaqekxt/jobs/b41cab0429c646d389a92c0339f5ab8c/evidence.json`.
+    It successfully parsed the 28-byte CSV: header row 1 `title,amount`, rows
+    2--3 `ALPHA,7` and `BETA,9`.
+  - HTML `page.html`: execution worker job
+    `c27ac35ee8b54483aeac4fd2955d425d` reached durable `stage=complete`
+    (terminal status `WORKING`) with evidence
+    `s3://igor-evidencebucket-kuuvbcaqekxt/jobs/c27ac35ee8b54483aeac4fd2955d425d/evidence.json`.
+    It successfully inspected line 1 / the sole HTML document and reported its
+    `h1` content `HTMLDOC OK`.
+  - Oversized image `large.png`: execution worker job
+    `73690a7045e54860887ecc537460ae8f` reached durable `stage=complete`
+    (terminal status `WORKING`) with evidence
+    `s3://igor-evidencebucket-kuuvbcaqekxt/jobs/73690a7045e54860887ecc537460ae8f/evidence.json`.
+    It verified the private PNG is 20,837,457 bytes (above the 3,500,000-byte
+    direct-image limit), 2000x2000, then successfully inspected it through the
+    execution worker / Nova Lite derivative path. It reported no readable text
+    or identifiable object and cited coordinate regions (for example,
+    lower-right for brightest yellow/green and upper-/lower-left for darkest
+    blue/purple).
+  - The five worker-job durable records, their attachment metadata, all completed
+    command events, and immutable evidence objects were re-read before this
+    release decision. No replacement job was created because each existing job
+    supplied a successful live inspection or the required concrete unsupported
+    result. Matrix command evidence from the original upload/routing flow remains
+    in execution records `cmd-019`, `cmd-020`, and `cmd-023`; the source objects
+    remain private under `attachments/live-matrix/...`.
 
 ### IGOR-007 — Web research with linked sources
 
