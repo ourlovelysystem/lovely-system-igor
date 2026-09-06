@@ -114,7 +114,8 @@ python3 -m unittest discover -s tests -v
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the data flow and
-[LOGBOOK.md](LOGBOOK.md) for decisions and observed results.
+[LOGBOOK.md](LOGBOOK.md) for decisions and observed results. Future improvements
+and their release grouping live in [ENHANCEMENTS.md](ENHANCEMENTS.md).
 
 ## Authority and boundaries
 

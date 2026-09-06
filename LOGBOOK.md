@@ -1,5 +1,12 @@
 # Igor logbook
 
+## 2026-09-06 — enhancement ledger established
+
+Future improvements now receive durable identifiers, observed-problem
+statements, acceptance evidence, and candidate release assignments in
+`ENHANCEMENTS.md`. The first candidate release records the upload performance,
+visibility, and stale-error improvements observed during live attachment tests.
+
 ## 2026-09-04 — initial vertical slice
 
 Decision: start with a constrained, verifiable deployment instead of an
