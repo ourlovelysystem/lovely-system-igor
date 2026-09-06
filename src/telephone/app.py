@@ -81,6 +81,9 @@ def _speak(call_id: str, text: str) -> dict[str, Any]:
     return {"Type":"Speak", "Parameters":{"CallId":call_id,"SpeechParameters":{"Text":text}}}
 def _hangup(call_id: str, text: str) -> dict[str, Any]:
     return _sma([_speak(call_id, text), {"Type":"Hangup","Parameters":{"CallId":call_id}}])
+def _diagnostic_hello(call_id: str) -> dict[str, Any]:
+    """Minimal documented PSTN Audio diagnostic; intentionally has no service dependencies."""
+    return _sma([_speak(call_id, "Hello from Igor"), {"Type":"Hangup", "Parameters":{"CallId":call_id}}])
 def _pin_prompt(call_id: str, retry: bool = False) -> dict[str, Any]:
     text = "PIN was not accepted. Enter your PIN followed by pound." if retry else "Welcome to Igor. Enter your PIN followed by pound."
     return _sma([{"Type":"SpeakAndGetDigits","Parameters":{"CallId":call_id,"SpeechParameters":{"Text":text},"InputDigitsRegex":"^[0-9]{1,32}#$","TerminatorDigits":["#"],"TimeoutInSeconds":15,"InBetweenDigitsTimeoutInMillis":5000}}])
@@ -96,11 +99,9 @@ def chime(event:dict[str,Any], table:Any, secrets:Any, lam:Any, conversation_fn:
     leg_a_call_id = _leg_a_call_id(event)
     event_type = event.get("InvocationEventType") or ("ACTION_SUCCESSFUL" if _is_digit_result(event) else "NEW_INBOUND_CALL")
     if event_type == "NEW_INBOUND_CALL":
-        try: enabled = _allow_any_caller(_secret(secrets, secret_name))
-        except Exception: enabled = False
-        if not enabled: return _hangup(leg_a_call_id, "Telephone authentication is unavailable. Goodbye.")
-        _put_call(table, call_id, authentication="PIN_REQUIRED", pin_attempts=0, raw_audio_retained=False)
-        return _pin_prompt(leg_a_call_id)
+        # IGOR-018 temporary physical-routing diagnostic.  Do not access Secrets
+        # Manager, caller identity/filtering, PIN state, Lex, DynamoDB, or Igor.
+        return _diagnostic_hello(leg_a_call_id)
     if event_type == "ACTION_SUCCESSFUL" and _is_digit_result(event):
         call = _call(table, call_id)
         try: valid = call.get("authentication") == "PIN_REQUIRED" and _pin_ok(_secret(secrets, secret_name), _digits(event))
@@ -150,12 +151,16 @@ def lex(event:dict[str,Any],table:Any,lam:Any,conversation_fn:str,control_fn:str
     return lex_reply(event,answer[:3000])
 def handler(event:dict[str,Any],context:Any)->dict[str,Any]:
     del context
-    import boto3
-    table=boto3.resource("dynamodb").Table(os.environ["TELEPHONE_CALLS_TABLE"]); sec=boto3.client("secretsmanager"); lam=boto3.client("lambda")
     if "CallDetails" in event:
         # Error fields are Chime diagnostics; deliberately do not log ActionData,
         # participants, caller identity, received digits, or secret material.
         diagnostic = {key: event[key] for key in ("InvocationEventType", "ErrorType", "ErrorMessage") if key in event}
         if diagnostic: print(json.dumps({"chime_diagnostic": diagnostic}))
+        # Keep the diagnostic free even of AWS SDK client construction.
+        if event.get("InvocationEventType", "NEW_INBOUND_CALL") == "NEW_INBOUND_CALL":
+            return _diagnostic_hello(_leg_a_call_id(event))
+    import boto3
+    table=boto3.resource("dynamodb").Table(os.environ["TELEPHONE_CALLS_TABLE"]); sec=boto3.client("secretsmanager"); lam=boto3.client("lambda")
+    if "CallDetails" in event:
         return chime(event,table,sec,lam,os.environ["CONVERSATION_FUNCTION_NAME"],os.environ["LEX_BOT_ALIAS_ARN"],os.environ["TELEPHONE_AUTH_SECRET_NAME"])
     return lex(event,table,lam,os.environ["CONVERSATION_FUNCTION_NAME"],os.environ["CONTROL_FUNCTION_NAME"])

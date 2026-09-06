@@ -1,4 +1,5 @@
-import importlib.util, io, json, unittest
+import importlib.util, io, json, sys, unittest
+from unittest.mock import patch
 from pathlib import Path
 from unittest.mock import Mock
 p=Path(__file__).parents[1]/'src/telephone/app.py'; spec=importlib.util.spec_from_file_location('telephone',p); telephone=importlib.util.module_from_spec(spec); spec.loader.exec_module(telephone)
@@ -21,15 +22,21 @@ class TelephoneTests(unittest.TestCase):
  def assert_contract(self, out):
   self.assert_sma(out)
   for action in out['Actions']: telephone._validate_action(action)
- def test_inbound_fixture_returns_documented_speak_and_get_digits(self):
+ def test_inbound_fixture_returns_isolated_official_hello_diagnostic(self):
   out=telephone.chime(self.call(),self.table,self.secret,self.lam,'conversation','arn:aws:lex:us-east-1:1:bot-alias/a/b','secret')
-  self.assert_sma(out,['SpeakAndGetDigits']); self.assert_contract(out)
-  p=out['Actions'][0]['Parameters']; self.assertEqual('leg-a-call-id',p['CallId']); self.assertEqual({'Text':'Welcome to Igor. Enter your PIN followed by pound.'},p['SpeechParameters'])
-  self.assertEqual('^[0-9]{1,32}#$',p['InputDigitsRegex']); self.assertEqual(['#'],p['TerminatorDigits'])
-  self.assertNotIn('2468',str(out)); self.assertNotIn('caller',str(self.table.mock_calls).lower())
+  self.assert_sma(out,['Speak','Hangup']); self.assert_contract(out)
+  p=out['Actions'][0]['Parameters']; self.assertEqual('leg-a-call-id',p['CallId']); self.assertEqual({'Text':'Hello from Igor'},p['SpeechParameters'])
+  self.assertEqual({'CallId':'leg-a-call-id'},out['Actions'][1]['Parameters'])
+  self.secret.get_secret_value.assert_not_called(); self.table.assert_not_called(); self.lam.invoke.assert_not_called()
+ def test_handler_diagnostic_does_not_construct_any_aws_sdk_client(self):
+  # A sentinel module has no resource/client attributes: touching boto3 would fail.
+  with patch.dict(sys.modules, {'boto3':object()}): out=telephone.handler(self.call(),None)
+  self.assert_sma(out,['Speak','Hangup']); self.assert_contract(out)
+  self.assertEqual('Hello from Igor',out['Actions'][0]['Parameters']['SpeechParameters']['Text'])
  def test_complete_chime_pin_lex_igor_audible_sequence(self):
   greeting=telephone.chime(self.call(),self.table,self.secret,self.lam,'conversation','arn:aws:lex:us-east-1:1:bot-alias/a/b','secret')
-  self.assert_sma(greeting,['SpeakAndGetDigits']); self.assert_contract(greeting)
+  self.assert_sma(greeting,['Speak','Hangup']); self.assert_contract(greeting)
+  self.secret.get_secret_value.assert_not_called(); self.table.assert_not_called(); self.lam.invoke.assert_not_called()
   self.table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED','pin_attempts':0}}; self.reply({'conversation_id':'conv'})
   handoff=telephone.chime(self.call('2468#','ACTION_SUCCESSFUL'),self.table,self.secret,self.lam,'conversation','arn:aws:lex:us-east-1:1:bot-alias/a/b','secret')
   self.assert_sma(handoff,['StartBotConversation']); self.assert_contract(handoff)
@@ -48,10 +55,10 @@ class TelephoneTests(unittest.TestCase):
     self.table.reset_mock(); self.lam.reset_mock(); e=self.call(event_type=event_type); e['ActionData']=action
     out=telephone.chime(e,self.table,self.secret,self.lam,'conversation','arn:aws:lex:us-east-1:1:bot-alias/a/b','secret')
     self.assert_sma(out,['Speak','Hangup']); self.assert_contract(out); self.lam.invoke.assert_not_called()
- def test_explicit_allow_any_caller_configuration_is_required(self):
+ def test_prior_admission_configuration_is_not_touched_by_diagnostic(self):
   self.secret.get_secret_value.return_value={'SecretString':'{"pin":"2468"}'}
   out=telephone.chime(self.call(),self.table,self.secret,self.lam,'conversation','alias','secret')
-  self.assert_sma(out,['Speak','Hangup']); self.assert_contract(out); self.table.put_item.assert_not_called()
+  self.assert_sma(out,['Speak','Hangup']); self.assert_contract(out); self.table.assert_not_called(); self.secret.get_secret_value.assert_not_called(); self.lam.invoke.assert_not_called()
  def test_lex_denies_unauthenticated_access(self):
   self.table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED'}}; out=telephone.lex(self.lex_event(),self.table,self.lam,'conversation','control'); self.assertIn('Authentication is required',out['messages'][0]['content']); self.lam.invoke.assert_not_called()
  def test_low_confidence_and_refusal_create_no_job(self):
