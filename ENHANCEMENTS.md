@@ -193,13 +193,15 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 
 ### IGOR-011 — Visible work while a job runs
 
-- Status: `IN PROGRESS`
+- Status: `READY`
 - Candidate release: Live directed work v1
 - Comparison capability: Keep the operator informed while working instead of
   merely returning a job ID.
-- Current state: The worker records durable stage, command purpose, round, and
-  completed-command count; the dashboard polls and displays them. A complete
-  live acceptance test remains outstanding.
+- Current state: The worker atomically appends durable stage, command purpose,
+  round, completion, exit-status, publication, deployment, and failure events;
+  the dashboard polls and displays them. Live acceptance job
+  `eee701a1cf6845d4b0e17db4e1e3deda` retained the required event sequence after
+  terminal completion.
 - Intended outcome: The conversation itself shows what Igor is doing, what has
   completed, what is blocked, and what remains.
 - Acceptance evidence:

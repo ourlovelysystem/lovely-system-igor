@@ -970,6 +970,10 @@ evidence ran out. A model statement is never proof."""
                             self.verify_published_revision(revision)
                             for revision in finish_request["published_revisions"]
                         )
+                        independent_checks.extend(
+                            self.verify_deployment_claim(claim, finish_request["published_revisions"])
+                            for claim in finish_request["deployment_claims"]
+                        )
                     except Exception as exc:
                         for block in tool_results:
                             result_block = block["toolResult"]
