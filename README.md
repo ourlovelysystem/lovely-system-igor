@@ -135,7 +135,9 @@ and their release grouping live in [ENHANCEMENTS.md](ENHANCEMENTS.md).
   secret values, but IAM does not prevent access when the task requires it.
 - Every worker workspace is archived to S3 before the job becomes terminal.
 - `WORKING` with changes requires cited successful verification after the last
-  change. Claimed public endpoints receive a separate HTTP probe from Igor.
+  successful change. A failed final change, publication, or deployment forbids
+  `WORKING`. Claimed public endpoints receive a separate HTTP probe from Igor,
+  and claimed GitHub publications receive an independent remote-ref check.
 - Every job retains its originating conversation. Its terminal summary,
   resources, endpoints, and evidence locations are written back as a durable
   Igor message, and the open dashboard conversation refreshes automatically.

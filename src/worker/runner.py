@@ -101,6 +101,19 @@ GENERAL_TOOL_CONFIG = {
                                 "type": "array",
                                 "items": {"type": "string"},
                             },
+                            "published_revisions": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "repository": {"type": "string"},
+                                        "branch": {"type": "string"},
+                                        "commit": {"type": "string"},
+                                    },
+                                    "required": ["repository", "branch", "commit"],
+                                    "additionalProperties": False,
+                                },
+                            },
                             "limitations": {
                                 "type": "array",
                                 "items": {"type": "string"},
@@ -113,6 +126,7 @@ GENERAL_TOOL_CONFIG = {
                             "evidence_command_ids",
                             "resources",
                             "public_endpoints",
+                            "published_revisions",
                             "limitations",
                         ],
                         "additionalProperties": False,
@@ -491,7 +505,12 @@ keep it out of the evidence transcript.
 run_command is the means of action and observation. Classify each command honestly as inspect, change,
 or verify. After changes, run fresh verification commands against live state. Then call finish_task.
 WORKING requires command evidence, and any changed system requires successful verification after its
-last change. Use BLOCKED for missing permission, quota, unavailable service, or another external
+last change. A failed final change, push, publication, or deployment forbids WORKING. When the
+objective requires publishing to GitHub, report every resulting repository, branch, and full commit
+SHA in published_revisions; Igor independently checks the remote ref before accepting WORKING. Never
+claim an enhancement or release complete unless every stated acceptance condition was exercised by
+cited verification; put anything unverified in limitations and use INCOMPLETE. Use BLOCKED for
+missing permission, quota, unavailable service, or another external
 prerequisite. Use FAILED for an attempted task that did not work, and INCOMPLETE only when time or
 evidence ran out. A model statement is never proof."""
 
@@ -555,7 +574,11 @@ evidence ran out. A model statement is never proof."""
         }
 
     @staticmethod
-    def _validate_finish(finish: Any, commands: list[dict[str, Any]]) -> dict[str, Any]:
+    def _validate_finish(
+        finish: Any,
+        commands: list[dict[str, Any]],
+        objective: str = "",
+    ) -> dict[str, Any]:
         if not isinstance(finish, dict):
             raise ValueError("finish_task input must be an object")
         status = finish.get("status")
@@ -569,6 +592,16 @@ evidence ran out. A model statement is never proof."""
                 isinstance(value, str) for value in finish[key]
             ):
                 raise ValueError(f"finish_task {key} must be a string array")
+        published_revisions = finish.get("published_revisions")
+        if not isinstance(published_revisions, list):
+            raise ValueError("finish_task published_revisions must be an array")
+        for revision in published_revisions:
+            if not isinstance(revision, dict) or set(revision) != {
+                "repository", "branch", "commit"
+            }:
+                raise ValueError("every published revision requires repository, branch, and commit")
+            if not all(isinstance(revision[key], str) and revision[key] for key in revision):
+                raise ValueError("published revision values must be non-empty strings")
         if not isinstance(finish.get("changes_made"), bool):
             raise ValueError("finish_task changes_made must be boolean")
 
@@ -599,6 +632,8 @@ evidence ran out. A model statement is never proof."""
                     for index, command in enumerate(commands)
                     if command["category"] == "change"
                 )
+                if commands[last_change]["exit_code"] != 0:
+                    raise ValueError("WORKING is forbidden when the final change command failed")
                 if not any(
                     index > last_change
                     and command["category"] == "verify"
@@ -606,7 +641,72 @@ evidence ran out. A model statement is never proof."""
                     for index, command in cited
                 ):
                     raise ValueError("WORKING requires cited verification after the last change")
+            delivery_commands = [
+                command
+                for command in commands
+                if re.search(
+                    r"\bgit\b[^\n;&|]*\bpush\b|\b(?:sam|cloudformation)\s+deploy\b",
+                    f"{command.get('command', '')} {command.get('purpose', '')}",
+                    re.IGNORECASE,
+                )
+            ]
+            if delivery_commands and delivery_commands[-1]["exit_code"] != 0:
+                raise ValueError("WORKING is forbidden when the final publication or deployment failed")
+            git_push_commands = [
+                command
+                for command in commands
+                if re.search(
+                    r"\bgit\b[^\n;&|]*\bpush\b",
+                    f"{command.get('command', '')} {command.get('purpose', '')}",
+                    re.IGNORECASE,
+                )
+            ]
+            publication_required = bool(
+                re.search(
+                    r"\b(push|publish|published)\b",
+                    objective,
+                    re.IGNORECASE,
+                )
+            )
+            if (publication_required or git_push_commands) and not published_revisions:
+                raise ValueError("WORKING requires independently verifiable published revisions")
         return finish
+
+    @staticmethod
+    def verify_published_revision(revision: dict[str, str]) -> dict[str, Any]:
+        repository = revision["repository"]
+        branch = revision["branch"]
+        commit = revision["commit"].lower()
+        if not re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?", repository):
+            raise ValueError(f"unsupported publication repository: {repository}")
+        if not re.fullmatch(r"(?!.*\.\.)[A-Za-z0-9_./-]+", branch):
+            raise ValueError(f"invalid publication branch: {branch}")
+        if not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise ValueError("published commit must be a full 40-character SHA")
+        checked = subprocess.run(
+            ["git", "ls-remote", "--exit-code", repository, f"refs/heads/{branch}"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if checked.returncode != 0:
+            raise RuntimeError(
+                f"remote branch verification failed for {repository} {branch}: "
+                f"{checked.stderr.strip()[:500]}"
+            )
+        remote_sha = checked.stdout.split()[0].lower() if checked.stdout.split() else ""
+        if remote_sha != commit:
+            raise RuntimeError(
+                f"remote branch {branch} points to {remote_sha or 'nothing'}, not {commit}"
+            )
+        return {
+            "check": "independent_git_remote_ref",
+            "repository": repository,
+            "branch": branch,
+            "commit": commit,
+            "passed": True,
+        }
 
     def run_general(self, job_id: str, item: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
         workspace = f"/tmp/igor-work-{job_id}"
@@ -716,7 +816,9 @@ evidence ran out. A model statement is never proof."""
                             "success" if command_record["exit_code"] == 0 else "error"
                         )
                     elif name == "finish_task":
-                        finish_request = self._validate_finish(tool_use.get("input"), commands)
+                        finish_request = self._validate_finish(
+                            tool_use.get("input"), commands, objective
+                        )
                         finish_tool_use_id = tool_use_id
                         output = {"accepted": True, "status": finish_request["status"]}
                         tool_status = "success"
@@ -746,6 +848,10 @@ evidence ran out. A model statement is never proof."""
                             self.probe_public_endpoint(endpoint)
                             for endpoint in finish_request["public_endpoints"]
                         ]
+                        independent_checks.extend(
+                            self.verify_published_revision(revision)
+                            for revision in finish_request["published_revisions"]
+                        )
                     except Exception as exc:
                         for block in tool_results:
                             result_block = block["toolResult"]
@@ -779,6 +885,7 @@ evidence ran out. A model statement is never proof."""
                         "changes_made": finish_request["changes_made"],
                         "resources": finish_request["resources"],
                         "public_endpoints": finish_request["public_endpoints"],
+                        "published_revisions": finish_request["published_revisions"],
                         "limitations": finish_request["limitations"],
                         "evidence_command_ids": finish_request["evidence_command_ids"],
                         "commands": commands,
@@ -793,6 +900,7 @@ evidence ran out. A model statement is never proof."""
                     "summary": finish_request["summary"],
                     "resources": finish_request["resources"],
                     "public_endpoints": finish_request["public_endpoints"],
+                    "published_revisions": finish_request["published_revisions"],
                     "limitations": finish_request["limitations"],
                     "evidence_uri": evidence_uri,
                     "workspace_uri": workspace_uri,

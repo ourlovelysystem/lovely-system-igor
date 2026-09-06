@@ -3,7 +3,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 
@@ -101,6 +101,7 @@ class RunnerTests(unittest.TestCase):
             "evidence_command_ids": ["cmd-002"],
             "resources": ["example-resource"],
             "public_endpoints": ["https://example.com"],
+            "published_revisions": [],
             "limitations": [],
         }
         self.assertEqual(finish, runner.Worker._validate_finish(finish, commands))
@@ -117,6 +118,7 @@ class RunnerTests(unittest.TestCase):
             "evidence_command_ids": ["cmd-001"],
             "resources": [],
             "public_endpoints": [],
+            "published_revisions": [],
             "limitations": [],
         }
         with self.assertRaisesRegex(ValueError, "after the last change"):
@@ -131,10 +133,94 @@ class RunnerTests(unittest.TestCase):
             "evidence_command_ids": ["cmd-001"],
             "resources": [],
             "public_endpoints": [],
+            "published_revisions": [],
             "limitations": [],
         }
         with self.assertRaisesRegex(ValueError, "must have succeeded"):
             runner.Worker._validate_finish(finish, commands)
+
+    def test_working_rejects_failed_final_change_even_after_successful_verification(self):
+        commands = [
+            {"command_id": "cmd-001", "command": "git commit -am update", "purpose": "Commit", "category": "change", "exit_code": 0},
+            {"command_id": "cmd-002", "command": "git push origin HEAD:main", "purpose": "Push to main", "category": "change", "exit_code": 128},
+            {"command_id": "cmd-003", "command": "python3 -m unittest", "purpose": "Run tests", "category": "verify", "exit_code": 0},
+        ]
+        finish = {
+            "status": "WORKING", "summary": "Locally committed but push failed.",
+            "changes_made": True, "evidence_command_ids": ["cmd-003"],
+            "resources": [], "public_endpoints": [], "published_revisions": [],
+            "limitations": ["push failed"],
+        }
+        with self.assertRaisesRegex(ValueError, "final change command failed"):
+            runner.Worker._validate_finish(finish, commands, "Commit and push to main")
+
+    def test_working_requires_published_revision_when_objective_requires_push(self):
+        commands = [
+            {"command_id": "cmd-001", "command": "git commit -am update", "purpose": "Commit", "category": "change", "exit_code": 0},
+            {"command_id": "cmd-002", "command": "python3 -m unittest", "purpose": "Run tests", "category": "verify", "exit_code": 0},
+        ]
+        finish = {
+            "status": "WORKING", "summary": "Done.", "changes_made": True,
+            "evidence_command_ids": ["cmd-002"], "resources": [],
+            "public_endpoints": [], "published_revisions": [], "limitations": [],
+        }
+        with self.assertRaisesRegex(ValueError, "published revisions"):
+            runner.Worker._validate_finish(finish, commands, "Push the change to main")
+
+    def test_working_rejects_failed_git_dash_c_push_even_after_later_change(self):
+        commands = [
+            {"command_id": "cmd-001", "command": "git commit -am update", "purpose": "Commit", "category": "change", "exit_code": 0},
+            {"command_id": "cmd-002", "command": "git -C /tmp/igor push origin HEAD:main", "purpose": "Push", "category": "change", "exit_code": 128},
+            {"command_id": "cmd-003", "command": "touch /tmp/report", "purpose": "Write report", "category": "change", "exit_code": 0},
+            {"command_id": "cmd-004", "command": "python3 -m unittest", "purpose": "Verify", "category": "verify", "exit_code": 0},
+        ]
+        finish = {
+            "status": "WORKING", "summary": "Changes published.",
+            "changes_made": True, "evidence_command_ids": ["cmd-004"],
+            "resources": ["commit"], "public_endpoints": [],
+            "published_revisions": [], "limitations": [],
+        }
+        with self.assertRaisesRegex(ValueError, "final publication"):
+            runner.Worker._validate_finish(finish, commands, "Implement changes")
+
+    def test_published_revision_is_checked_against_remote_branch(self):
+        completed = Mock(returncode=0, stdout="a" * 40 + "\trefs/heads/main\n", stderr="")
+        revision = {
+            "repository": "https://github.com/ourlovelysystem/lovely-system-igor.git",
+            "branch": "main",
+            "commit": "a" * 40,
+        }
+        with patch.object(runner.subprocess, "run", return_value=completed) as run:
+            result = runner.Worker.verify_published_revision(revision)
+        self.assertTrue(result["passed"])
+        self.assertEqual("independent_git_remote_ref", result["check"])
+        self.assertEqual("git", run.call_args.args[0][0])
+
+    def test_published_revision_rejects_remote_branch_mismatch(self):
+        completed = Mock(returncode=0, stdout="b" * 40 + "\trefs/heads/main\n", stderr="")
+        revision = {
+            "repository": "https://github.com/ourlovelysystem/lovely-system-igor.git",
+            "branch": "main",
+            "commit": "a" * 40,
+        }
+        with patch.object(runner.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(RuntimeError, "points to"):
+                runner.Worker.verify_published_revision(revision)
+
+    def test_successful_aws_deploy_does_not_require_github_revision(self):
+        commands = [
+            {"command_id": "cmd-001", "command": "sam deploy", "purpose": "Deploy stack", "category": "change", "exit_code": 0},
+            {"command_id": "cmd-002", "command": "aws cloudformation describe-stacks", "purpose": "Verify stack", "category": "verify", "exit_code": 0},
+        ]
+        finish = {
+            "status": "WORKING", "summary": "Stack deployed.", "changes_made": True,
+            "evidence_command_ids": ["cmd-002"], "resources": ["stack"],
+            "public_endpoints": [], "published_revisions": [], "limitations": [],
+        }
+        self.assertEqual(
+            finish,
+            runner.Worker._validate_finish(finish, commands, "Deploy the stack to AWS"),
+        )
 
     def test_template_grants_unbounded_aws_administrator_access(self):
         template = (Path(__file__).parents[1] / "template.yaml").read_text()
@@ -154,6 +240,15 @@ class RunnerTests(unittest.TestCase):
         template = (Path(__file__).parents[1] / "template.yaml").read_text()
         self.assertIn("AbortIncompleteMultipartUpload", template)
         self.assertIn("POST /conversations/{conversation_id}/attachments", template)
+        self.assertIn(
+            "POST /conversations/{conversation_id}/attachments/{attachment_id}/part-urls",
+            template,
+        )
+        self.assertIn(
+            "DELETE /conversations/{conversation_id}/attachments/{attachment_id}",
+            template,
+        )
+        self.assertIn("- DELETE", template)
         self.assertIn("ATTACHMENTS_BUCKET", template)
         self.assertIn("${EvidenceBucket.Arn}/attachments/*", template)
 
@@ -224,6 +319,7 @@ class RunnerTests(unittest.TestCase):
                                         "evidence_command_ids": ["cmd-002"],
                                         "resources": ["service"],
                                         "public_endpoints": [],
+                                        "published_revisions": [],
                                         "limitations": [],
                                     },
                                 }

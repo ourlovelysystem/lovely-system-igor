@@ -477,6 +477,7 @@ Resources:
           - authorization
           - content-type
         AllowMethods:
+          - DELETE
           - GET
           - POST
           - OPTIONS
@@ -603,6 +604,15 @@ Resources:
       RouteKey: POST /conversations/{conversation_id}/attachments/{attachment_id}/part-url
       Target: !Sub integrations/${ConversationIntegration}
 
+  DashboardAttachmentPartUrlsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DashboardApi
+      AuthorizationType: JWT
+      AuthorizerId: !Ref DashboardAuthorizer
+      RouteKey: POST /conversations/{conversation_id}/attachments/{attachment_id}/part-urls
+      Target: !Sub integrations/${ConversationIntegration}
+
   DashboardCompleteAttachmentRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
@@ -610,6 +620,15 @@ Resources:
       AuthorizationType: JWT
       AuthorizerId: !Ref DashboardAuthorizer
       RouteKey: POST /conversations/{conversation_id}/attachments/{attachment_id}/complete
+      Target: !Sub integrations/${ConversationIntegration}
+
+  DashboardCancelAttachmentRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DashboardApi
+      AuthorizationType: JWT
+      AuthorizerId: !Ref DashboardAuthorizer
+      RouteKey: DELETE /conversations/{conversation_id}/attachments/{attachment_id}
       Target: !Sub integrations/${ConversationIntegration}
 
   DashboardStage:

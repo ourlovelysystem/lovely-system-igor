@@ -1,5 +1,20 @@
 # Igor logbook
 
+## 2026-09-06 — false completion reports rejected mechanically
+
+Observed defect: Igor reported `WORKING` after a required GitHub push failed,
+and later described Upload experience v2 as complete despite omitting the API
+Gateway routes required by its new dashboard calls.
+
+The worker now rejects `WORKING` when the final change, publication, or
+deployment command failed. GitHub publication claims must name the repository,
+branch, and full commit SHA; the worker independently reads the remote branch
+and requires an exact match. The missing batched-part and cancellation routes,
+their DELETE CORS method, and template regression assertions were also added.
+
+Local result: the full unit suite and Python compilation pass. Live deployment
+and operator acceptance remain pending.
+
 ## 2026-09-06 — enhancement ledger established
 
 Future improvements now receive durable identifiers, observed-problem
