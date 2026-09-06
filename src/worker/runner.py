@@ -481,8 +481,8 @@ For EC2 instance profiles, use this existing profile name:
 {self.workload_instance_profile or '(no instance profile supplied)'}
 You have full AWS AdministratorAccess. Every AWS service and resource is available when the operator's
 objective calls for it, including IAM, account security, existing infrastructure, and Igor itself.
-When GITHUB_APP_SECRET_NAME is configured, Git is authenticated as Igor's GitHub App and may clone,
-commit, and push to repositories granted to that App. Preserve the operator's requested branch and
+When GITHUB_TOKEN_SECRET_NAME is configured, Git is authenticated and may clone, commit, and push to
+repositories granted to Igor's GitHub token. Preserve the operator's requested branch and
 repository; do not substitute a different publication target.
 Do not invent constraints the operator did not give you. Do not expose credentials or secret values in
 ordinary output; when the objective requires managing sensitive material, minimize its disclosure and

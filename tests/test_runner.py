@@ -1,5 +1,5 @@
-import json
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -13,7 +13,7 @@ import runner  # noqa: E402
 
 credential_spec = importlib.util.spec_from_file_location(
     "github_app_credential",
-    Path(__file__).parents[1] / "scripts" / "github-app-credential.py",
+    Path(__file__).parents[1] / "scripts" / "github-credential.py",
 )
 github_app_credential = importlib.util.module_from_spec(credential_spec)
 assert credential_spec.loader is not None
@@ -144,28 +144,19 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("WORKLOAD_ROLE_ARN", template)
         self.assertIn("CONVERSATIONS_TABLE", template)
 
-    def test_template_supports_github_app_credentials(self):
+    def test_template_supports_github_token(self):
         template = (Path(__file__).parents[1] / "template.yaml").read_text()
-        self.assertIn("GitHubAppSecretName", template)
-        self.assertIn("GITHUB_APP_SECRET_NAME", template)
-        self.assertIn("github-app-credential.py configure", template)
+        self.assertIn("GitHubTokenSecretName", template)
+        self.assertIn("GITHUB_TOKEN_SECRET_NAME", template)
+        self.assertIn("github-credential.py configure", template)
 
-    def test_github_app_jwt_has_expected_claims(self):
-        original_run = github_app_credential.subprocess.run
-        github_app_credential.subprocess.run = Mock(
-            return_value=Mock(stdout=b"signature")
+    def test_github_token_secret_must_be_nonempty(self):
+        self.assertEqual(
+            "github-token",
+            github_app_credential._token_from_response({"SecretString": " github-token "}),
         )
-        try:
-            token = github_app_credential._github_jwt("12345", "private-key", now=1_000)
-        finally:
-            github_app_credential.subprocess.run = original_run
-        header, payload, signature = token.split(".")
-        decode = lambda value: json.loads(
-            __import__("base64").urlsafe_b64decode(value + "=" * (-len(value) % 4))
-        )
-        self.assertEqual({"alg": "RS256", "typ": "JWT"}, decode(header))
-        self.assertEqual({"iat": 940, "exp": 1540, "iss": "12345"}, decode(payload))
-        self.assertTrue(signature)
+        with self.assertRaisesRegex(RuntimeError, "empty"):
+            github_app_credential._token_from_response({"SecretString": ""})
 
     def test_general_agent_executes_changes_and_records_evidence(self):
         table = Mock()
