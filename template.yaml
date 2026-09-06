@@ -494,7 +494,7 @@ Resources:
               Description: Routes uncategorized telephone utterances to Igor
               FulfillmentCodeHook: {Enabled: true}
 
-  IgorLexBotVersion:
+  IgorLexBotVersion2:
     Type: AWS::Lex::BotVersion
     Properties:
       BotId: !Ref IgorLexBot
@@ -507,7 +507,7 @@ Resources:
     Properties:
       BotAliasName: active
       BotId: !Ref IgorLexBot
-      BotVersion: !GetAtt IgorLexBotVersion.BotVersion
+      BotVersion: !GetAtt IgorLexBotVersion2.BotVersion
       BotAliasLocaleSettings:
         - LocaleId: en_US
           BotAliasLocaleSetting:
