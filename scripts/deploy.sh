@@ -53,9 +53,12 @@ else
       echo "Unable to read the existing GitHubTokenSecretName parameter; refusing to deploy." >&2
       exit 1
     fi
-    if [[ -z "$github_token_secret_name" || "$github_token_secret_name" == "None" ]]; then
-      echo "Existing stack has no readable GitHubTokenSecretName parameter; refusing to deploy." >&2
-      exit 1
+    # CloudFormation renders an empty String parameter as either an empty string or
+    # `None` in text output. Both are readable, valid no-credential settings.
+    # Pass an explicit empty override so SAM preserves that configuration rather
+    # than inventing a credential or applying a different default.
+    if [[ "$github_token_secret_name" == "None" ]]; then
+      github_token_secret_name=""
     fi
     github_token_parameter=("GitHubTokenSecretName=$github_token_secret_name")
   fi
