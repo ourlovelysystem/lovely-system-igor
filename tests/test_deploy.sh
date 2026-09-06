@@ -37,6 +37,9 @@ elif [[ "$*" == *'GitHubTokenSecretName'* ]]; then
     existing-none) printf 'None\n' ;;
     *) printf '%s\n' 'existing-secret-name' ;;
   esac
+elif [[ "$*" == *'polly synthesize-speech'* ]]; then
+  # Mimic Polly's raw 8-kHz signed-16-bit PCM output without contacting AWS.
+  printf '\0\0\1\0' > "${!#}"
 elif [[ "$*" == *'Outputs'* ]]; then
   printf 'https://example.invalid\n'
 fi
@@ -67,6 +70,12 @@ args=open(sys.argv[1], 'rb').read().split(b'\0')
 assert ('GitHubTokenSecretName=' + sys.argv[2]).encode() in args, args
 PY
   assert_no_secret_disclosure_or_retrieval
+  python3 - "$work/aws.log" <<'PY'
+import sys
+args=open(sys.argv[1], 'rb').read().split(b'\0')
+for expected in (b'polly', b'synthesize-speech', b'Hello from Igor', b'8000'):
+    assert expected in args, args
+PY
 }
 
 # Existing stack + omitted variable preserves its current secret-name parameter.

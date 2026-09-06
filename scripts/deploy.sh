@@ -80,7 +80,18 @@ sam deploy \
 
 # The bounded diagnostic WAV is uploaded only after CloudFormation creates its private bucket and Chime policy.
 audio_bucket="$(aws cloudformation describe-stack-resource --stack-name "$stack_name" --logical-resource-id DiagnosticAudioBucket --region "$region" --query 'StackResourceDetail.PhysicalResourceId' --output text)"
-python3 -c 'import math,struct,wave; o=wave.open("/tmp/igor-018-diagnostic.wav","wb"); o.setnchannels(1); o.setsampwidth(2); o.setframerate(8000); o.writeframes(b"".join(struct.pack("<h",int(9000*math.sin(2*math.pi*440*i/8000))) for i in range(8000))); o.close()'
+# Generate unmistakable spoken content, rather than a format-valid tone. Polly PCM is
+# raw signed 16-bit mono little-endian; wrap it in the WAV required by PlayAudio.
+aws polly synthesize-speech --region "$region" --engine standard --voice-id Joanna \
+  --output-format pcm --sample-rate 8000 --text "Hello from Igor" /tmp/igor-018-diagnostic.pcm
+python3 - <<'PY_WAV'
+import wave
+with open("/tmp/igor-018-diagnostic.pcm", "rb") as source, wave.open("/tmp/igor-018-diagnostic.wav", "wb") as output:
+    output.setnchannels(1)
+    output.setsampwidth(2)
+    output.setframerate(8000)
+    output.writeframes(source.read())
+PY_WAV
 aws s3 cp /tmp/igor-018-diagnostic.wav "s3://$audio_bucket/igor-018/diagnostic.wav" --region "$region" --sse AES256 --content-type audio/wav
 
 igor_url="$(aws cloudformation describe-stacks \
