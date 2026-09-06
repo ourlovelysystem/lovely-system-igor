@@ -424,6 +424,36 @@ Resources:
                 Action: lambda:InvokeFunction
                 Resource: [!GetAtt ConversationFunction.Arn, !GetAtt ControlFunction.Arn]
 
+  DiagnosticAudioBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      Tags:
+        - Key: igor:job-id
+          Value: 3a37be1ca9264dcda9adf9d27030b5fa
+
+  DiagnosticAudioBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DiagnosticAudioBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowChimeVoiceConnectorReadOnlyDiagnosticWav
+            Effect: Allow
+            Principal: {Service: voiceconnector.chime.amazonaws.com}
+            Action: s3:GetObject
+            Resource: !Sub ${DiagnosticAudioBucket.Arn}/igor-018/diagnostic.wav
+            Condition:
+              StringEquals: {AWS:SourceAccount: !Ref AWS::AccountId}
+
   VoiceAdapterFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -442,6 +472,7 @@ Resources:
           LEX_BOT_ALIAS_ARN: !GetAtt IgorLexBotAlias.Arn
           CONVERSATION_FUNCTION_NAME: !Ref ConversationFunction
           CONTROL_FUNCTION_NAME: !Ref ControlFunction
+          DIAGNOSTIC_AUDIO_BUCKET: !Ref DiagnosticAudioBucket
 
   LexBotRole:
     Type: AWS::IAM::Role
@@ -596,6 +627,7 @@ Resources:
         Variables:
           CONVERSATIONS_TABLE: !Ref ConversationsTable
           CONTROL_FUNCTION_NAME: !Ref ControlFunction
+          DIAGNOSTIC_AUDIO_BUCKET: !Ref DiagnosticAudioBucket
           DEFAULT_MODEL_ID: !Ref DefaultModelId
           ATTACHMENTS_BUCKET: !Ref EvidenceBucket
 
