@@ -200,8 +200,12 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 - Current state: The worker atomically appends durable stage, command purpose,
   round, completion, exit-status, publication, deployment, and failure events;
   the dashboard polls and displays them. Live acceptance job
-  `eee701a1cf6845d4b0e17db4e1e3deda` retained the required event sequence after
-  terminal completion.
+  `c3e6baba0a2c4733a1ee8480f5256a0f` retained 40 durable events after terminal
+  completion, including current activity, command starts/completions and exit
+  statuses, successful and deliberately failed verification (exit 7), actual
+  publication, actual deployment, immediate failure reporting, and the terminal
+  event. Its evidence contains independent GitHub ref and CloudFormation
+  SourceRevision checks for `80c735c1ebc20fb48aa649666900fb6f2e96cc6f`.
 - Intended outcome: The conversation itself shows what Igor is doing, what has
   completed, what is blocked, and what remains.
 - Acceptance evidence:
