@@ -554,10 +554,10 @@ def converse(
         for tool_use in tool_uses:
             name = tool_use.get("name", "unknown")
             try:
-                # A model can emit one execute_task use per attachment.  A single
-                # conversation request is the idempotency boundary for worker-routed
-                # files: submit once, then return the same durable job to later uses.
-                if name == "execute_task" and worker_attachments and submitted_worker_job is not None:
+                # One operator request is the idempotency boundary for all directed
+                # work, including text-only requests. Submit its first execute_task
+                # once, then return that same durable job to every later tool use.
+                if name == "execute_task" and submitted_worker_job is not None:
                     output = {**submitted_worker_job, "reused_for_request": True}
                 else:
                     output = _run_tool(
@@ -568,7 +568,7 @@ def converse(
                         conversation_id=conversation_id,
                         attachments=worker_attachments if name == "execute_task" else None,
                     )
-                    if name == "execute_task" and worker_attachments:
+                    if name == "execute_task":
                         submitted_worker_job = output
                 status = "success"
             except Exception as exc:

@@ -375,6 +375,72 @@ class UploadEnhancementTests(ConversationTests):
         self.s3.abort_multipart_upload.assert_called_once()
         self.assertEqual("CANCELLED", self.table.update_item.call_args.kwargs["ExpressionAttributeValues"][":cancelled"])
 
+class ExecuteTaskRequestDeduplicationTests(ConversationTests):
+    def _queue_response(self, job_id):
+        return {
+            "Payload": io.BytesIO(
+                json.dumps({"statusCode": 202, "body": json.dumps({"job_id": job_id, "status": "QUEUED"})}).encode()
+            )
+        }
+
+    def test_text_only_repeated_execute_task_calls_submit_one_durable_job(self):
+        self.table.query.return_value = {"Items": [{"role": "user", "content_json": '[{"text":"Perform directed work."}]'}]}
+        uses = [
+            {"toolUse": {"toolUseId": f"use-{number}", "name": "execute_task", "input": {"objective": f"Task {number}"}}}
+            for number in range(2)
+        ]
+        self.bedrock.converse.side_effect = [
+            {"output": {"message": {"role": "assistant", "content": uses}}},
+            {"output": {"message": {"role": "assistant", "content": [{"text": "One job is queued."}]}}},
+        ]
+        self.lambda_client.invoke.return_value = self._queue_response("text-job-one")
+
+        result = conversation.converse(table=self.table, bedrock=self.bedrock, lambda_client=self.lambda_client,
+            control_function_name="igor-control", model_id="model", conversation_id="text-only-request")
+
+        self.lambda_client.invoke.assert_called_once()
+        self.assertEqual(["text-job-one", "text-job-one"], [event["result"]["job_id"] for event in result["tool_events"]])
+        self.assertTrue(result["tool_events"][1]["result"]["reused_for_request"])
+        body = json.loads(json.loads(self.lambda_client.invoke.call_args.kwargs["Payload"])["body"])
+        self.assertEqual([], body["attachments"])
+
+    def test_direct_model_only_image_is_never_forwarded_to_execute_task(self):
+        image = {"attachment_id": "image", "filename": "direct.png", "content_type": "image/png", "size": 8,
+                 "s3_uri": "s3://igor/attachments/operator/abc/image/direct.png", "s3_key": "attachments/operator/abc/image/direct.png"}
+        self.s3.get_object.return_value = {"Body": io.BytesIO(b"\x89PNG\r\n\x1a\n")}
+        self.table.query.return_value = {"Items": [{"role": "user", "content_json": '[{"text":"Inspect image."}]'}]}
+        self.bedrock.converse.side_effect = [
+            {"output": {"message": {"role": "assistant", "content": [{"toolUse": {"toolUseId": "use-1", "name": "execute_task", "input": {"objective": "Inspect image."}}}]}}},
+            {"output": {"message": {"role": "assistant", "content": [{"text": "One job is queued."}]}}},
+        ]
+        self.lambda_client.invoke.return_value = self._queue_response("image-job")
+
+        conversation.converse(table=self.table, bedrock=self.bedrock, lambda_client=self.lambda_client,
+            control_function_name="igor-control", model_id="model", conversation_id="image-request", attachments=[image], s3=self.s3, attachments_bucket="igor")
+
+        body = json.loads(json.loads(self.lambda_client.invoke.call_args.kwargs["Payload"])["body"])
+        self.assertEqual([], body["attachments"])
+
+    def test_separate_conversation_requests_can_submit_separate_jobs(self):
+        self.table.query.return_value = {"Items": [{"role": "user", "content_json": '[{"text":"Perform work."}]'}]}
+        self.bedrock.converse.side_effect = [
+            {"output": {"message": {"role": "assistant", "content": [{"toolUse": {"toolUseId": "one", "name": "execute_task", "input": {"objective": "First task"}}}]}}},
+            {"output": {"message": {"role": "assistant", "content": [{"text": "First queued."}]}}},
+            {"output": {"message": {"role": "assistant", "content": [{"toolUse": {"toolUseId": "two", "name": "execute_task", "input": {"objective": "Second task"}}}]}}},
+            {"output": {"message": {"role": "assistant", "content": [{"text": "Second queued."}]}}},
+        ]
+        self.lambda_client.invoke.side_effect = [self._queue_response("first-job"), self._queue_response("second-job")]
+
+        first = conversation.converse(table=self.table, bedrock=self.bedrock, lambda_client=self.lambda_client,
+            control_function_name="igor-control", model_id="model", conversation_id="request-one")
+        second = conversation.converse(table=self.table, bedrock=self.bedrock, lambda_client=self.lambda_client,
+            control_function_name="igor-control", model_id="model", conversation_id="request-two")
+
+        self.assertEqual(2, self.lambda_client.invoke.call_count)
+        self.assertEqual("first-job", first["tool_events"][0]["result"]["job_id"])
+        self.assertEqual("second-job", second["tool_events"][0]["result"]["job_id"])
+
+
 class WorkerAttachmentDeduplicationTests(ConversationTests):
     def test_many_worker_attachments_submit_one_job_and_exclude_direct_model_attachment(self):
         worker_files = [
