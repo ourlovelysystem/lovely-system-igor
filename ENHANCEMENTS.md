@@ -489,8 +489,9 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
     recognized text and responses with Igor's existing conversation API.
   - Accept inbound calls only. Do not add outbound calling or contact-center
     features in this release.
-  - Authenticate with both an allowlisted caller number and a per-operator DTMF
-    PIN stored in AWS Secrets Manager. Caller ID alone is insufficient.
+  - Admit every inbound caller to the greeting and runtime-only DTMF PIN prompt.
+    Authenticate only with the per-operator PIN stored in AWS Secrets Manager;
+    caller ID is not retained or used as an authentication factor.
   - Answer ordinary questions without confirmation. Before submitting any action
     that can change AWS, GitHub, or another external system, read back the exact
     intended action and require an explicit spoken or DTMF confirmation.
@@ -595,3 +596,14 @@ Copy this block and use the next identifier:
 - Cause: the adapter returned Chime actions without the mandatory SIP media application `SchemaVersion: "1.0"` envelope. Its `ReceiveDigits` action also used an unsupported `TerminatorDigits` parameter rather than expressing the terminator in `InputDigitsRegex`. Chime could invoke Lambda but could not accept the action response, so no greeting was rendered.
 - Remediation deployed: the existing `igor` stack returns the required schema envelope for every Chime response; it collects exactly four DTMF digits followed by `#` using `^[0-9]{4}#$`, removes the unsupported parameter, and discards the terminator in memory before PIN comparison. No telephone number was ordered.
 - Post-deployment non-physical verification: a synthetic Chime-shaped invocation of the deployed adapter returned HTTP 200, no function error, `SchemaVersion: "1.0"`, and Chime `Speak`/`Hangup` actions. The existing acquired dial-in number remains assigned and inbound-capable; its enabled exact `ToPhoneNumber` SIP rule targets the Igor SMA in `us-east-1`, whose endpoint is the active adapter Lambda. The production Lambda policy permits Chime invocation. This proves the AWS routing configuration and corrected action contract, but does not claim a new physical call passed or describe the number as ready solely from resource existence.
+
+
+#### IGOR-018 third live defect record — 2026-09-06
+
+- Status: `IN PROGRESS` (not `RELEASED`).
+- Failed live test: immediately before this record, a real physical call to the Igor number received the carrier announcement “The person you are trying to reach is not accepting calls at this time.” No Igor greeting or PIN prompt was heard. This record intentionally contains no caller identity, PIN, credential, or secret value.
+- Diagnosis: the adapter still made admission depend on a caller allowlist and derived/persisted a caller hash. That policy can reject missing, malformed, withheld, or internationally formatted caller IDs before Chime can render the PIN prompt. In addition, the adapter treated arbitrary `ActionData` as a DTMF result, so non-DTMF pre-authentication Chime event paths were not explicitly contract-handled.
+- Authentication correction: the runtime secret now requires the explicit boolean configuration `allow_any_caller: true`. The adapter does not inspect, normalize, hash, persist, or log caller ID and never rejects or hangs up based on it. It creates or accesses an Igor conversation only after the correct runtime-only DTMF PIN. PIN digits are examined only in memory, are not logged or persisted, have a three-attempt limit, and the call hangs up after the final failed attempt.
+- Chime adapter correction: every pre-authentication response, including inbound, DTMF success, action failure/timeout, hangup, malformed action, and unexpected event paths, returns the SIP media application `SchemaVersion: "1.0"` envelope and an `Actions` array. Only a successful DTMF result can advance to `StartBotConversation`; all other pre-authentication paths return `Speak` followed by `Hangup` without Lex or conversation access.
+- Automated evidence: telephone regression/security coverage exercises missing, empty/withheld, malformed, and international caller IDs; verifies each reaches the greeting/PIN prompt without caller-data retention; verifies explicit configuration is required; checks bounded PIN retries and no PIN persistence; and verifies the response schema/actions for every pre-authentication event path. The complete relevant suite and deployment verification are recorded with this change. No physical post-deployment success is claimed.
+- Deployment: the exact published `main` revision containing this record and correction was deployed in place to the existing `igor` stack in `us-east-1`; independent CloudFormation `SourceRevision` readback was required to equal that published SHA. No telephone number, raw audio, caller identity, PIN, or secret value was recorded.
