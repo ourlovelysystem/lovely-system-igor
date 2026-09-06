@@ -473,7 +473,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 
 ### IGOR-018 — Telephone conversation and command interface
 
-- Status: `READY`
+- Status: `IN PROGRESS`
 - Candidate release: Telephone interface v1
 - Observed problem: Igor is available through the dashboard but has no telephone
   interface. The operator cannot call Igor, ask spoken questions, hear answers,
@@ -503,6 +503,17 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
     available in the dashboard and through a later authenticated call.
 - Depends on: IGOR-014 for request-scoped job deduplication. IGOR-011 progress
   events should be used when reporting active-job status by voice.
+- Implementation evidence (2026-09-06):
+  - Automated regression/security suite passed (114 tests): runtime Secrets Manager
+    retrieval, allowlist rejection, PIN non-retention, low-confidence/refusal no-job
+    paths, and conditional single-job confirmation are exercised without recording
+    sensitive values.
+  - The adapter persists a non-sensitive call ID, pseudonymous caller hash,
+    conversation ID, confirmation state, worker job ID, and raw-audio-retained=false
+    in a dedicated durable ledger; questions invoke the existing conversation Lambda
+    with tools disabled and confirmed commands invoke the existing control Lambda.
+  - Stack deployment and a physical call remain required. Do not mark RELEASED until
+    the real-call acceptance criteria below pass.
 - Acceptance evidence:
   - A real telephone call to the provisioned number authenticates the operator
     without exposing the PIN in logs, transcripts, events, or evidence.

@@ -16,6 +16,14 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional Secrets Manager secret containing Igor's GitHub token
+  TelephoneAuthSecretName:
+    Type: String
+    Default: igor/telephone-auth
+    Description: Runtime-only caller allowlist and PIN secret name
+  TelephoneLexBotAliasArn:
+    Type: String
+    Default: ""
+    Description: Lex V2 alias ARN configured after bot provisioning
 
 Conditions:
   HasGitHubCredentials: !Not [!Equals [!Ref GitHubTokenSecretName, ""]]
@@ -369,6 +377,71 @@ Resources:
       InvokedViaFunctionUrl: true
       Principal: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
 
+  TelephoneCallsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: call_id
+          AttributeType: S
+        - AttributeName: record_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: call_id
+          KeyType: HASH
+        - AttributeName: record_key
+          KeyType: RANGE
+      Tags:
+        - Key: igor:job-id
+          Value: a1a99b2dcd1c4bb1894374cabad5ba93
+
+  TelephoneRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: TelephoneRuntime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: "*"
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem]
+                Resource: !GetAtt TelephoneCallsTable.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${TelephoneAuthSecretName}-*
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: [!GetAtt ConversationFunction.Arn, !GetAtt ControlFunction.Arn]
+
+  VoiceAdapterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/telephone/
+      Handler: app.handler
+      Runtime: python3.12
+      Architectures: [arm64]
+      MemorySize: 256
+      Timeout: 30
+      Role: !GetAtt TelephoneRole.Arn
+      Environment:
+        Variables:
+          TELEPHONE_CALLS_TABLE: !Ref TelephoneCallsTable
+          TELEPHONE_AUTH_SECRET_NAME: !Ref TelephoneAuthSecretName
+          LEX_BOT_ALIAS_ARN: !Ref TelephoneLexBotAliasArn
+          CONVERSATION_FUNCTION_NAME: !Ref ConversationFunction
+          CONTROL_FUNCTION_NAME: !Ref ControlFunction
+
   ConversationRole:
     Type: AWS::IAM::Role
     Properties:
@@ -711,3 +784,7 @@ Outputs:
     Value: !GetAtt DashboardApi.ApiEndpoint
   OperatorUserPoolId:
     Value: !Ref OperatorPool
+  TelephoneCallsTableName:
+    Value: !Ref TelephoneCallsTable
+  VoiceAdapterFunctionArn:
+    Value: !GetAtt VoiceAdapterFunction.Arn

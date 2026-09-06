@@ -496,6 +496,7 @@ def converse(
     attachments: list[dict[str, Any]] | None = None,
     s3: Any = None,
     attachments_bucket: str = "",
+    allow_tools: bool = True,
 ) -> dict[str, Any]:
     messages = _load_messages(table, conversation_id)
     if attachments:
@@ -522,7 +523,7 @@ def converse(
             modelId=model_id,
             system=[{"text": SYSTEM_PROMPT}],
             messages=messages,
-            toolConfig=TOOL_CONFIG,
+            **({"toolConfig": TOOL_CONFIG} if allow_tools else {}),
             inferenceConfig={"maxTokens": 3000},
         )
         assistant = result.get("output", {}).get("message", {})
@@ -883,6 +884,7 @@ def handle(
                 attachments=attachments,
                 s3=s3,
                 attachments_bucket=attachments_bucket,
+                allow_tools=not bool(body.get("telephone")),
             )
             return response(200, {"conversation_id": conversation_id, **result})
 
