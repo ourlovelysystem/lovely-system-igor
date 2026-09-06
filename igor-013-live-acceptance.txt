@@ -1,0 +1,3 @@
+IGOR-013 live recovery acceptance artifact.
+This commit records the first-half live recovery acceptance evidence.
+The paired binary artifact must contain the exact required recovery bytes.
