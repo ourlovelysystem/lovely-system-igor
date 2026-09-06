@@ -102,6 +102,7 @@ class RunnerTests(unittest.TestCase):
             "resources": ["example-resource"],
             "public_endpoints": ["https://example.com"],
             "published_revisions": [],
+            "deployment_claims": [],
             "limitations": [],
         }
         self.assertEqual(finish, runner.Worker._validate_finish(finish, commands))
@@ -119,6 +120,7 @@ class RunnerTests(unittest.TestCase):
             "resources": [],
             "public_endpoints": [],
             "published_revisions": [],
+            "deployment_claims": [],
             "limitations": [],
         }
         with self.assertRaisesRegex(ValueError, "after the last change"):
@@ -134,6 +136,7 @@ class RunnerTests(unittest.TestCase):
             "resources": [],
             "public_endpoints": [],
             "published_revisions": [],
+            "deployment_claims": [],
             "limitations": [],
         }
         with self.assertRaisesRegex(ValueError, "must have succeeded"):
@@ -149,6 +152,7 @@ class RunnerTests(unittest.TestCase):
             "status": "WORKING", "summary": "Locally committed but push failed.",
             "changes_made": True, "evidence_command_ids": ["cmd-003"],
             "resources": [], "public_endpoints": [], "published_revisions": [],
+            "deployment_claims": [],
             "limitations": ["push failed"],
         }
         with self.assertRaisesRegex(ValueError, "final change command failed"):
@@ -162,7 +166,7 @@ class RunnerTests(unittest.TestCase):
         finish = {
             "status": "WORKING", "summary": "Done.", "changes_made": True,
             "evidence_command_ids": ["cmd-002"], "resources": [],
-            "public_endpoints": [], "published_revisions": [], "limitations": [],
+            "public_endpoints": [], "published_revisions": [], "deployment_claims": [], "limitations": [],
         }
         with self.assertRaisesRegex(ValueError, "published revisions"):
             runner.Worker._validate_finish(finish, commands, "Push the change to main")
@@ -178,7 +182,7 @@ class RunnerTests(unittest.TestCase):
             "status": "WORKING", "summary": "Changes published.",
             "changes_made": True, "evidence_command_ids": ["cmd-004"],
             "resources": ["commit"], "public_endpoints": [],
-            "published_revisions": [], "limitations": [],
+            "published_revisions": [], "deployment_claims": [], "limitations": [],
         }
         with self.assertRaisesRegex(ValueError, "final publication"):
             runner.Worker._validate_finish(finish, commands, "Implement changes")
@@ -207,7 +211,7 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "points to"):
                 runner.Worker.verify_published_revision(revision)
 
-    def test_successful_aws_deploy_does_not_require_github_revision(self):
+    def test_successful_aws_deploy_requires_independent_deployment_claim(self):
         commands = [
             {"command_id": "cmd-001", "command": "sam deploy", "purpose": "Deploy stack", "category": "change", "exit_code": 0},
             {"command_id": "cmd-002", "command": "aws cloudformation describe-stacks", "purpose": "Verify stack", "category": "verify", "exit_code": 0},
@@ -215,12 +219,10 @@ class RunnerTests(unittest.TestCase):
         finish = {
             "status": "WORKING", "summary": "Stack deployed.", "changes_made": True,
             "evidence_command_ids": ["cmd-002"], "resources": ["stack"],
-            "public_endpoints": [], "published_revisions": [], "limitations": [],
+            "public_endpoints": [], "published_revisions": [], "deployment_claims": [], "limitations": [],
         }
-        self.assertEqual(
-            finish,
-            runner.Worker._validate_finish(finish, commands, "Deploy the stack to AWS"),
-        )
+        with self.assertRaisesRegex(ValueError, "deployment claims"):
+            runner.Worker._validate_finish(finish, commands, "Deploy the stack to AWS")
 
     def test_template_grants_unbounded_aws_administrator_access(self):
         template = (Path(__file__).parents[1] / "template.yaml").read_text()
@@ -320,6 +322,7 @@ class RunnerTests(unittest.TestCase):
                                         "resources": ["service"],
                                         "public_endpoints": [],
                                         "published_revisions": [],
+                                        "deployment_claims": [],
                                         "limitations": [],
                                     },
                                 }
@@ -410,14 +413,93 @@ class LiveWorkEventTests(unittest.TestCase):
 
     def test_record_event_persists_safe_completed_event_with_exit_status(self):
         table = Mock()
-        table.get_item.return_value = {"Item": {"status": "RUNNING", "work_events": []}}
         worker = runner.Worker(
             table=table, bedrock=Mock(), s3=Mock(), cloudformation=Mock(), evidence_bucket="bucket",
             execution_role_arn="role", cloudformation_role_arn="role",
         )
         worker.record_event("job-1", "command_completed", "Completed verification: token=secret", command_id="cmd-001", exit_code=0)
         values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        event = values[":value0"][-1]
+        event = values[":event"][-1]
         self.assertEqual("command_completed", event["type"])
         self.assertEqual(0, event["exit_code"])
         self.assertNotIn("secret", event["message"])
+
+class DeliveryEvidenceRegressionTests(unittest.TestCase):
+    REVISION = "a" * 40
+    REPOSITORY = "https://github.com/ourlovelysystem/lovely-system-igor.git"
+
+    def finish(self, **overrides):
+        value = {
+            "status": "WORKING", "summary": "Published and deployed.", "changes_made": True,
+            "evidence_command_ids": ["cmd-003"], "resources": [], "public_endpoints": [],
+            "published_revisions": [{"repository": self.REPOSITORY, "branch": "main", "commit": self.REVISION}],
+            "deployment_claims": [{"stack": "igor-job-123456789012-live", "region": "us-east-1",
+                "repository": self.REPOSITORY, "branch": "main", "source_revision": self.REVISION}],
+            "limitations": [],
+        }
+        value.update(overrides)
+        return value
+
+    def commands(self, deploy_exit=0):
+        return [
+            {"command_id": "cmd-001", "command": "git push origin main", "purpose": "Publish", "category": "change", "exit_code": 0},
+            {"command_id": "cmd-002", "command": "sam deploy", "purpose": "Deploy", "category": "change", "exit_code": deploy_exit},
+            {"command_id": "cmd-003", "command": "aws cloudformation describe-stacks", "purpose": "Verify", "category": "verify", "exit_code": 0},
+        ]
+
+    def test_deployment_claim_without_readback_is_rejected_by_finish_validation(self):
+        with self.assertRaisesRegex(ValueError, "deployment claims"):
+            runner.Worker._validate_finish(
+                self.finish(deployment_claims=[]), self.commands(), "Deploy the published revision"
+            )
+
+    def test_failed_deployment_cannot_produce_working(self):
+        with self.assertRaisesRegex(ValueError, "final change command failed"):
+            runner.Worker._validate_finish(self.finish(), self.commands(deploy_exit=1), "Deploy the published revision")
+
+    def test_cloudformation_readback_requires_matching_source_revision(self):
+        cloudformation = Mock()
+        cloudformation.describe_stacks.return_value = {"Stacks": [{"Parameters": [
+            {"ParameterKey": "SourceRevision", "ParameterValue": "b" * 40}
+        ]}]}
+        worker = runner.Worker(table=Mock(), bedrock=Mock(), s3=Mock(), cloudformation=cloudformation,
+            evidence_bucket="bucket", execution_role_arn="role", cloudformation_role_arn="role")
+        with self.assertRaisesRegex(RuntimeError, "SourceRevision"):
+            worker.verify_deployment_claim(self.finish()["deployment_claims"][0], self.finish()["published_revisions"])
+
+    def test_cloudformation_readback_is_persistable_structured_evidence(self):
+        cloudformation = Mock()
+        cloudformation.describe_stacks.return_value = {"Stacks": [{"Parameters": [
+            {"ParameterKey": "SourceRevision", "ParameterValue": self.REVISION}
+        ]}]}
+        worker = runner.Worker(table=Mock(), bedrock=Mock(), s3=Mock(), cloudformation=cloudformation,
+            evidence_bucket="bucket", execution_role_arn="role", cloudformation_role_arn="role")
+        check = worker.verify_deployment_claim(self.finish()["deployment_claims"][0], self.finish()["published_revisions"])
+        self.assertTrue(check["passed"])
+        self.assertEqual(self.REVISION, check["deployed_source_revision"])
+
+    def test_terminal_message_includes_full_published_and_deployed_revisions(self):
+        conversations = Mock()
+        worker = runner.Worker(table=Mock(), bedrock=Mock(), s3=Mock(), cloudformation=Mock(), evidence_bucket="bucket",
+            execution_role_arn="role", cloudformation_role_arn="role", conversations_table=conversations)
+        worker.publish_completion(item={"conversation_id": "conversation"}, job_id="job", status="WORKING",
+            summary="Done", evidence_uri="s3://bucket/evidence.json", finished_at="2026-01-01T00:00:00+00:00",
+            published_revisions=self.finish()["published_revisions"], deployment_claims=self.finish()["deployment_claims"])
+        text = conversations.put_item.call_args.kwargs["Item"]["content_json"]
+        self.assertIn(self.REVISION, text)
+        self.assertIn("igor-job-123456789012-live", text)
+
+
+class AtomicEventRegressionTests(unittest.TestCase):
+    def test_concurrent_event_writers_use_atomic_list_append_without_read_replace(self):
+        table = Mock()
+        worker = runner.Worker(table=table, bedrock=Mock(), s3=Mock(), cloudformation=Mock(), evidence_bucket="bucket",
+            execution_role_arn="role", cloudformation_role_arn="role")
+        worker.record_event("job", "command_started", "first")
+        worker.record_event("job", "command_completed", "second", exit_code=0)
+        table.get_item.assert_not_called()
+        calls = table.update_item.call_args_list
+        self.assertEqual(2, len(calls))
+        self.assertTrue(all("list_append(if_not_exists(work_events, :empty), :event)" in call.kwargs["UpdateExpression"] for call in calls))
+        self.assertEqual("first", calls[0].kwargs["ExpressionAttributeValues"][":event"][0]["message"])
+        self.assertEqual("second", calls[1].kwargs["ExpressionAttributeValues"][":event"][0]["message"])

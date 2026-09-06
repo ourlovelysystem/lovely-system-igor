@@ -137,6 +137,21 @@ GENERAL_TOOL_CONFIG = {
                                     "additionalProperties": False,
                                 },
                             },
+                            "deployment_claims": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "stack": {"type": "string"},
+                                        "region": {"type": "string"},
+                                        "repository": {"type": "string"},
+                                        "branch": {"type": "string"},
+                                        "source_revision": {"type": "string"},
+                                    },
+                                    "required": ["stack", "region", "repository", "branch", "source_revision"],
+                                    "additionalProperties": False,
+                                },
+                            },
                             "limitations": {
                                 "type": "array",
                                 "items": {"type": "string"},
@@ -150,6 +165,7 @@ GENERAL_TOOL_CONFIG = {
                             "resources",
                             "public_endpoints",
                             "published_revisions",
+                            "deployment_claims",
                             "limitations",
                         ],
                         "additionalProperties": False,
@@ -398,18 +414,19 @@ class Worker:
         )
 
     def record_event(self, job_id: str, event_type: str, message: str, **fields: Any) -> None:
-        """Append a small durable event that the dashboard can poll during and after work."""
+        """Atomically append a durable event; concurrent writers cannot replace one another's history."""
         event = {"at": now_iso(), "type": event_type, "message": safe_event_text(message), **fields}
-        # DynamoDB list_append preserves completion history; keep the item bounded for predictable reads.
-        item = self.table.get_item(Key={"job_id": job_id}, ConsistentRead=True).get("Item", {})
-        if not isinstance(item, dict):
-            item = {}
-        previous = item.get("work_events", [])
-        events = list(previous) if isinstance(previous, list) else []
-        events = events[-(MAX_WORK_EVENTS - 1):]
-        events.append(event)
-        self.update(job_id, item.get("status", "RUNNING"),
-                    work_events=events, current_activity=event["message"])
+        # DynamoDB evaluates list_append on the stored value, rather than a caller-read list.
+        self.table.update_item(
+            Key={"job_id": job_id},
+            UpdateExpression=(
+                "SET work_events = list_append(if_not_exists(work_events, :empty), :event), "
+                "current_activity = :activity, updated_at = :updated"
+            ),
+            ExpressionAttributeValues={
+                ":empty": [], ":event": [event], ":activity": event["message"], ":updated": now_iso(),
+            },
+        )
 
     def put_evidence(self, job_id: str, evidence: dict[str, Any]) -> str:
         key = f"jobs/{job_id}/evidence.json"
@@ -455,6 +472,8 @@ class Worker:
         workspace_uri: str = "",
         resources: list[str] | None = None,
         public_endpoints: list[str] | None = None,
+        published_revisions: list[dict[str, str]] | None = None,
+        deployment_claims: list[dict[str, str]] | None = None,
         finished_at: str,
     ) -> None:
         conversation_id = item.get("conversation_id")
@@ -465,6 +484,17 @@ class Worker:
             lines.extend(["", "Resources:", *[f"- {value}" for value in resources]])
         if public_endpoints:
             lines.extend(["", "Endpoints:", *[f"- {value}" for value in public_endpoints]])
+        if published_revisions:
+            lines.extend(["", "Verified publications:", *[
+                f"- {value['repository']} | branch {value['branch']} | commit {value['commit']}"
+                for value in published_revisions
+            ]])
+        if deployment_claims:
+            lines.extend(["", "Verified deployments:", *[
+                f"- stack {value['stack']} | region {value['region']} | "
+                f"source revision {value['source_revision']} | {value['repository']}@{value['branch']}"
+                for value in deployment_claims
+            ]])
         lines.extend(["", f"Evidence: {evidence_uri}"])
         if workspace_uri:
             lines.append(f"Workspace: {workspace_uri}")
@@ -544,8 +574,10 @@ or verify. After changes, run fresh verification commands against live state. Th
 WORKING requires command evidence, and any changed system requires successful verification after its
 last change. A failed final change, push, publication, or deployment forbids WORKING. When the
 objective requires publishing to GitHub, report every resulting repository, branch, and full commit
-SHA in published_revisions; Igor independently checks the remote ref before accepting WORKING. Never
-claim an enhancement or release complete unless every stated acceptance condition was exercised by
+SHA in published_revisions; Igor independently checks the remote ref before accepting WORKING. For an
+Igor stack deployment, also report deployment_claims with stack, region, repository, branch, and the
+full source_revision. Igor independently reads CloudFormation and requires SourceRevision to exactly
+match the verified remote commit before accepting WORKING. Never claim an enhancement or release complete unless every stated acceptance condition was exercised by
 cited verification; put anything unverified in limitations and use INCOMPLETE. Use BLOCKED for
 missing permission, quota, unavailable service, or another external
 prerequisite. Use FAILED for an attempted task that did not work, and INCOMPLETE only when time or
@@ -632,6 +664,9 @@ evidence ran out. A model statement is never proof."""
         published_revisions = finish.get("published_revisions")
         if not isinstance(published_revisions, list):
             raise ValueError("finish_task published_revisions must be an array")
+        deployment_claims = finish.get("deployment_claims")
+        if not isinstance(deployment_claims, list):
+            raise ValueError("finish_task deployment_claims must be an array")
         for revision in published_revisions:
             if not isinstance(revision, dict) or set(revision) != {
                 "repository", "branch", "commit"
@@ -639,6 +674,15 @@ evidence ran out. A model statement is never proof."""
                 raise ValueError("every published revision requires repository, branch, and commit")
             if not all(isinstance(revision[key], str) and revision[key] for key in revision):
                 raise ValueError("published revision values must be non-empty strings")
+        for claim in deployment_claims:
+            if not isinstance(claim, dict) or set(claim) != {
+                "stack", "region", "repository", "branch", "source_revision"
+            }:
+                raise ValueError("every deployment claim requires stack, region, repository, branch, and source_revision")
+            if not all(isinstance(claim[key], str) and claim[key] for key in claim):
+                raise ValueError("deployment claim values must be non-empty strings")
+            if not re.fullmatch(r"[0-9a-fA-F]{40}", claim["source_revision"]):
+                raise ValueError("deployment source_revision must be a full 40-character SHA")
         if not isinstance(finish.get("changes_made"), bool):
             raise ValueError("finish_task changes_made must be boolean")
 
@@ -707,6 +751,13 @@ evidence ran out. A model statement is never proof."""
             )
             if (publication_required or git_push_commands) and not published_revisions:
                 raise ValueError("WORKING requires independently verifiable published revisions")
+            deployment_required = bool(re.search(r"\b(deploy|deployed|deployment)\b", objective, re.IGNORECASE)) or bool(
+                re.search(r"\b(?:sam|cloudformation)\s+(?:deploy|create-stack|update-stack)\b", " ".join(
+                    f"{command.get('command', '')} {command.get('purpose', '')}" for command in commands
+                ), re.IGNORECASE)
+            )
+            if deployment_required and not deployment_claims:
+                raise ValueError("WORKING requires independently verifiable deployment claims")
         return finish
 
     @staticmethod
@@ -743,6 +794,30 @@ evidence ran out. A model statement is never proof."""
             "branch": branch,
             "commit": commit,
             "passed": True,
+        }
+
+    def verify_deployment_claim(self, claim: dict[str, str], published_revisions: list[dict[str, str]]) -> dict[str, Any]:
+        """Independently prove an Igor stack was deployed from the verified remote commit."""
+        matching_revision = next((revision for revision in published_revisions if
+            revision["repository"] == claim["repository"] and revision["branch"] == claim["branch"] and
+            revision["commit"].lower() == claim["source_revision"].lower()), None)
+        if matching_revision is None:
+            raise RuntimeError("deployment claim source revision is not a verified published revision")
+        if claim["region"] != self.region:
+            raise RuntimeError(f"deployment claim region {claim['region']} does not match worker region {self.region}")
+        stack = self.cloudformation.describe_stacks(StackName=claim["stack"])["Stacks"][0]
+        parameters = {entry["ParameterKey"]: entry.get("ParameterValue", "") for entry in stack.get("Parameters", [])}
+        deployed_revision = parameters.get("SourceRevision", "")
+        if deployed_revision.lower() != claim["source_revision"].lower():
+            raise RuntimeError(
+                f"stack {claim['stack']} SourceRevision is {deployed_revision or 'missing'}, not {claim['source_revision']}"
+            )
+        return {
+            "check": "independent_cloudformation_source_revision",
+            "stack": claim["stack"], "region": claim["region"],
+            "repository": claim["repository"], "branch": claim["branch"],
+            "source_revision": claim["source_revision"].lower(),
+            "deployed_source_revision": deployed_revision.lower(), "passed": True,
         }
 
     def run_general(self, job_id: str, item: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
@@ -930,6 +1005,7 @@ evidence ran out. A model statement is never proof."""
                         "resources": finish_request["resources"],
                         "public_endpoints": finish_request["public_endpoints"],
                         "published_revisions": finish_request["published_revisions"],
+                        "deployment_claims": finish_request["deployment_claims"],
                         "limitations": finish_request["limitations"],
                         "evidence_command_ids": finish_request["evidence_command_ids"],
                         "commands": commands,
@@ -945,6 +1021,7 @@ evidence ran out. A model statement is never proof."""
                     "resources": finish_request["resources"],
                     "public_endpoints": finish_request["public_endpoints"],
                     "published_revisions": finish_request["published_revisions"],
+                    "deployment_claims": finish_request["deployment_claims"],
                     "limitations": finish_request["limitations"],
                     "evidence_uri": evidence_uri,
                     "workspace_uri": workspace_uri,
@@ -968,6 +1045,8 @@ evidence ran out. A model statement is never proof."""
                     workspace_uri=workspace_uri,
                     resources=finish_request["resources"],
                     public_endpoints=finish_request["public_endpoints"],
+                    published_revisions=finish_request["published_revisions"],
+                    deployment_claims=finish_request["deployment_claims"],
                     finished_at=finished_at,
                 )
                 self.record_event(job_id, "completed" if status == "WORKING" else "failure", finish_request["summary"], stage=fields["stage"], terminal_status=status)
