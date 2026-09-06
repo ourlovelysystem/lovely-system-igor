@@ -23,7 +23,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 
 | Release | Outcome | Included enhancements | Status | Deployed commit |
 | --- | --- | --- | --- | --- |
-| Upload experience v2 | Faster small and medium uploads with inspectable performance | IGOR-001, IGOR-002, IGOR-003, IGOR-004 | PROPOSED | — |
+| Upload experience v2 | Faster, inspectable uploads that survive conversation navigation safely | IGOR-001, IGOR-002, IGOR-003, IGOR-004, IGOR-005 | PROPOSED | — |
 
 ## Enhancements
 
@@ -86,6 +86,26 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 - Acceptance evidence:
   - Starting a new upload or send cannot present an earlier error as its result.
   - A current failure remains visible until the operator retries or dismisses it.
+
+### IGOR-005 — Safe uploads across conversation navigation
+
+- Status: `READY`
+- Candidate release: Upload experience v2
+- Observed problem: Starting a new chat hides an active upload without canceling
+  it. The global upload counter can keep the new chat's Send button disabled,
+  and a completed hidden attachment remains associated with the old conversation
+  without a recovery surface.
+- Intended outcome: Active uploads remain visible and usable in their originating
+  conversation while the operator uses other conversations, with an explicit
+  cancel action.
+- Acceptance evidence:
+  - Starting or selecting another conversation does not lose an upload card.
+  - An upload never becomes attached to a different conversation accidentally.
+  - Upload activity in one conversation does not disable sending in another.
+  - Returning to the originating conversation shows current progress or the
+    completed attachment.
+  - Canceling aborts the browser request and the S3 multipart upload, and records
+    a terminal attachment state.
 
 ## Adding an enhancement
 
