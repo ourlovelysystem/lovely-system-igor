@@ -53,8 +53,8 @@ _ACTION_CONTRACTS = {
                             "TerminatorDigits": list, "TimeoutInSeconds": int,
                             "InBetweenDigitsTimeoutInMillis": int},
     "Speak": {"CallId": str, "SpeechParameters": dict},
-    "PlayAudio": {"CallId": str, "AudioSource": dict},
-    "Hangup": {"CallId": str},
+    "PlayAudio": {"ParticipantTag": str, "AudioSource": dict},
+    "Hangup": {"ParticipantTag": str, "SipResponseCode": str},
     "StartBotConversation": {"BotAliasArn": str, "LocaleId": str, "SessionAttributes": dict},
 }
 def _validate_action(action: dict[str, Any]) -> None:
@@ -74,6 +74,8 @@ def _validate_action(action: dict[str, Any]) -> None:
         audio = parameters["AudioSource"]
         if set(audio) != {"Type", "BucketName", "Key"} or audio.get("Type") != "S3" or not all(isinstance(audio.get(key), str) and audio[key] for key in ("BucketName", "Key")):
             raise ValueError("unsupported Chime audio source")
+    if action["Type"] == "Hangup" and parameters["SipResponseCode"] not in {"0", "480", "486"}:
+        raise ValueError("unsupported Chime SIP response code")
     if action["Type"] == "SpeakAndGetDigits" and parameters["TerminatorDigits"] != ["#"]:
         raise ValueError("unsupported Chime terminator")
 def _sma(actions:list[dict[str,Any]])->dict[str,Any]:
@@ -86,11 +88,14 @@ def _speak(call_id: str, text: str) -> dict[str, Any]:
     return {"Type":"Speak", "Parameters":{"CallId":call_id,"SpeechParameters":{"Text":text}}}
 def _hangup(call_id: str, text: str) -> dict[str, Any]:
     return _sma([_speak(call_id, text), {"Type":"Hangup","Parameters":{"CallId":call_id}}])
-def _diagnostic_play_audio(call_id: str, bucket_name: str) -> dict[str, Any]:
-    """Bounded S3 WAV diagnostic; intentionally has no service dependencies."""
+def _diagnostic_play_audio(bucket_name: str) -> dict[str, Any]:
+    """IGOR-018's exact inbound-only S3 diagnostic response."""
     if not bucket_name:
         raise ValueError("diagnostic audio bucket is not configured")
-    return _sma([{"Type":"PlayAudio", "Parameters":{"CallId":call_id,"AudioSource":{"Type":"S3","BucketName":bucket_name,"Key":"igor-018/diagnostic.wav"}}}, {"Type":"Hangup", "Parameters":{"CallId":call_id}}])
+    return _sma([{"Type":"PlayAudio", "Parameters":{"ParticipantTag":"LEG-A", "AudioSource":{"Type":"S3","BucketName":bucket_name,"Key":"igor-018/diagnostic.wav"}}}])
+def _diagnostic_hangup(sip_response_code: str) -> dict[str, Any]:
+    """Terminate only after media success; failures use a supported SIP code."""
+    return _sma([{"Type":"Hangup", "Parameters":{"ParticipantTag":"LEG-A", "SipResponseCode":sip_response_code}}])
 def _pin_prompt(call_id: str, retry: bool = False) -> dict[str, Any]:
     text = "PIN was not accepted. Enter your PIN followed by pound." if retry else "Welcome to Igor. Enter your PIN followed by pound."
     return _sma([{"Type":"SpeakAndGetDigits","Parameters":{"CallId":call_id,"SpeechParameters":{"Text":text},"InputDigitsRegex":"^[0-9]{1,32}#$","TerminatorDigits":["#"],"TimeoutInSeconds":15,"InBetweenDigitsTimeoutInMillis":5000}}])
@@ -100,32 +105,17 @@ def _is_digit_result(event: dict[str, Any]) -> bool:
 def _attempts(call: dict[str, Any]) -> int:
     try: return max(0, int(call.get("pin_attempts", 0)))
     except (TypeError, ValueError): return 0
-def chime(event:dict[str,Any], table:Any, secrets:Any, lam:Any, conversation_fn:str, bot_alias_arn:str, secret_name:str)->dict[str,Any]:
-    """Handle Chime actions without retaining caller identity or PIN material."""
-    call_id = _call_id(event)
-    leg_a_call_id = _leg_a_call_id(event)
-    event_type = event.get("InvocationEventType") or ("ACTION_SUCCESSFUL" if _is_digit_result(event) else "NEW_INBOUND_CALL")
+def chime(event:dict[str,Any], table:Any=None, secrets:Any=None, lam:Any=None, conversation_fn:str="", bot_alias_arn:str="", secret_name:str="")->dict[str,Any]:
+    """IGOR-018 isolated SMA handler: no authentication or service dependency."""
+    del table, secrets, lam, conversation_fn, bot_alias_arn, secret_name
+    event_type = event.get("InvocationEventType", "NEW_INBOUND_CALL")
     if event_type == "NEW_INBOUND_CALL":
-        # IGOR-018 temporary physical-routing diagnostic.  Do not access Secrets
-        # Manager, caller identity/filtering, PIN state, Lex, DynamoDB, or Igor.
-        return _diagnostic_play_audio(leg_a_call_id, os.environ.get("DIAGNOSTIC_AUDIO_BUCKET", ""))
-    if event_type == "ACTION_SUCCESSFUL" and _is_digit_result(event):
-        call = _call(table, call_id)
-        try: valid = call.get("authentication") == "PIN_REQUIRED" and _pin_ok(_secret(secrets, secret_name), _digits(event))
-        except Exception: valid = False
-        if not valid:
-            attempts = _attempts(call) + 1
-            if attempts >= MAX_PIN_ATTEMPTS: return _hangup(leg_a_call_id, "Authentication failed. Goodbye.")
-            _put_call(table, call_id, authentication="PIN_REQUIRED", pin_attempts=attempts, raw_audio_retained=False)
-            return _pin_prompt(leg_a_call_id, retry=True)
-        if not bot_alias_arn.strip(): return _hangup(leg_a_call_id, "Telephone service is not configured. Goodbye.")
-        created = _body(_invoke(lam, conversation_fn, {"requestContext":{"http":{"method":"POST"},"authorizer":{"jwt":{"claims":{"sub":"telephone"}}}},"rawPath":"/conversations","body":"{}"}))
-        conversation_id = created["conversation_id"]
-        _put_call(table, call_id, authentication="AUTHENTICATED", conversation_id=conversation_id, raw_audio_retained=False)
-        return _start_bot(call_id, conversation_id, bot_alias_arn)
-    # ACTION_FAILED, INVALID_LAMBDA_RESPONSE, HANGUP, and unexpected pre-auth
-    # events never access Lex or conversation services.
-    return _hangup(leg_a_call_id, "Authentication failed. Goodbye.")
+        return _diagnostic_play_audio(os.environ.get("DIAGNOSTIC_AUDIO_BUCKET", ""))
+    if event_type == "ACTION_SUCCESSFUL":
+        return _diagnostic_hangup("0")
+    # Chime terminal/failure paths must still receive a documented Hangup action,
+    # while staying outside authentication, media-repeat, and conversation flows.
+    return _diagnostic_hangup("480")
 def lex_reply(event:dict[str,Any],text:str)->dict[str,Any]:
     state=event.get("sessionState",{}); intent=(state.get("intent") or {}).get("name","IgorRelayIntent")
     attrs=state.get("sessionAttributes") or {}
@@ -156,18 +146,23 @@ def lex(event:dict[str,Any],table:Any,lam:Any,conversation_fn:str,control_fn:str
     answer=str(reply.get("text") or reply.get("assistant_text") or "I could not produce an answer.")
     _put_call(table,call_id,authentication="AUTHENTICATED",conversation_id=call["conversation_id"],last_turn_at=now(),raw_audio_retained=False)
     return lex_reply(event,answer[:3000])
+def _safe_chime_diagnostic(event: dict[str, Any]) -> None:
+    """Emit only the bounded operational fields approved for IGOR-018."""
+    action_data = event.get("ActionData") or {}
+    diagnostic = {
+        "event_type": event.get("InvocationEventType", "NEW_INBOUND_CALL"),
+        "sequence": event.get("Sequence"),
+        "action_type": action_data.get("Type") if isinstance(action_data, dict) else None,
+        "ErrorType": event.get("ErrorType"),
+        "ErrorMessage": event.get("ErrorMessage"),
+    }
+    print(json.dumps({"chime_diagnostic": diagnostic}))
 def handler(event:dict[str,Any],context:Any)->dict[str,Any]:
     del context
     if "CallDetails" in event:
-        # Error fields are Chime diagnostics; deliberately do not log ActionData,
-        # participants, caller identity, received digits, or secret material.
-        diagnostic = {key: event[key] for key in ("InvocationEventType", "ErrorType", "ErrorMessage") if key in event}
-        if diagnostic: print(json.dumps({"chime_diagnostic": diagnostic}))
-        # Keep the diagnostic free even of AWS SDK client construction.
-        if event.get("InvocationEventType", "NEW_INBOUND_CALL") == "NEW_INBOUND_CALL":
-            return _diagnostic_play_audio(_leg_a_call_id(event), os.environ.get("DIAGNOSTIC_AUDIO_BUCKET", ""))
+        _safe_chime_diagnostic(event)
+        # The entire Chime route remains dependency-free for this physical test.
+        return chime(event)
     import boto3
-    table=boto3.resource("dynamodb").Table(os.environ["TELEPHONE_CALLS_TABLE"]); sec=boto3.client("secretsmanager"); lam=boto3.client("lambda")
-    if "CallDetails" in event:
-        return chime(event,table,sec,lam,os.environ["CONVERSATION_FUNCTION_NAME"],os.environ["LEX_BOT_ALIAS_ARN"],os.environ["TELEPHONE_AUTH_SECRET_NAME"])
+    table=boto3.resource("dynamodb").Table(os.environ["TELEPHONE_CALLS_TABLE"]); lam=boto3.client("lambda")
     return lex(event,table,lam,os.environ["CONVERSATION_FUNCTION_NAME"],os.environ["CONTROL_FUNCTION_NAME"])
