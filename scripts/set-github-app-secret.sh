@@ -10,6 +10,7 @@ app_id="$1"
 installation_id="$2"
 private_key_file="$3"
 secret_name="${4:-igor/github-app}"
+region="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 
 command -v aws >/dev/null || { echo "AWS CLI is required" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "Python 3 is required" >&2; exit 1; }
@@ -32,15 +33,17 @@ payload = {
 pathlib.Path(output_path).write_text(json.dumps(payload), encoding="utf-8")
 PY
 
-if aws secretsmanager describe-secret --secret-id "$secret_name" >/dev/null 2>&1; then
+if aws secretsmanager describe-secret --secret-id "$secret_name" --region "$region" >/dev/null 2>&1; then
   aws secretsmanager put-secret-value \
     --secret-id "$secret_name" \
+    --region "$region" \
     --secret-string "file://$secret_file" \
     --query ARN \
     --output text
 else
   aws secretsmanager create-secret \
     --name "$secret_name" \
+    --region "$region" \
     --description "GitHub App identity used by Igor workers" \
     --secret-string "file://$secret_file" \
     --query ARN \
