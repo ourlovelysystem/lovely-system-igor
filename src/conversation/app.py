@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -14,7 +15,32 @@ from typing import Any
 MAX_MESSAGE_LENGTH = 20_000
 MAX_CONTEXT_MESSAGES = 60
 MAX_TOOL_ROUNDS = 4
+MAX_ATTACHMENTS_PER_MESSAGE = 20
+MAX_UPLOAD_BYTES = 5 * 1024**3 * 10_000
+DEFAULT_PART_SIZE = 100 * 1024**2
+MAX_PART_SIZE = 5 * 1024**3
+INLINE_IMAGE_BYTES = 3_500_000
+INLINE_DOCUMENT_BYTES = 20_000_000
 BYTES_MARKER = "__igor_bytes_base64_v1__"
+
+IMAGE_FORMATS = {
+    "image/gif": "gif",
+    "image/jpeg": "jpeg",
+    "image/jpg": "jpeg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
+DOCUMENT_FORMATS = {
+    ".csv": "csv",
+    ".doc": "doc",
+    ".docx": "docx",
+    ".html": "html",
+    ".md": "md",
+    ".pdf": "pdf",
+    ".txt": "txt",
+    ".xls": "xls",
+    ".xlsx": "xlsx",
+}
 
 SYSTEM_PROMPT = """You are Igor, Will Daly's private AWS-resident conversational coding and
 infrastructure worker. Will directs the work. Speak plainly, preserve conversational context, and use
@@ -25,7 +51,9 @@ his objective with a smaller preapproved task and do not ask him to operate AWS 
 get_job_status for a known job. Never imply that work was performed unless a tool result proves it.
 QUEUED and RUNNING are unfinished. WORKING requires recorded execution and verification evidence.
 Report BLOCKED, FAILED, or INCOMPLETE plainly. Do not invent AWS, GitHub, test, deployment, endpoint,
-or evidence results."""
+or evidence results. The operator may attach files. Image and document blocks are the files themselves.
+An attachment manifest gives the private S3 location for every attachment. If a file is too large or
+not a model-supported format, use execute_task so the worker can inspect it directly in S3."""
 
 TOOL_CONFIG = {
     "tools": [
@@ -156,6 +184,8 @@ def _put_message(
     conversation_id: str,
     role: str,
     content: list[dict[str, Any]],
+    display_text: str | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     timestamp = now_iso()
     item = {
@@ -169,18 +199,26 @@ def _put_message(
             default=_content_json_default,
         ),
     }
+    if display_text is not None:
+        item["display_text"] = display_text
+    if attachments:
+        item["attachments_json"] = json.dumps(attachments, separators=(",", ":"))
     table.put_item(Item=item)
     return item
 
 
-def _load_messages(table: Any, conversation_id: str) -> list[dict[str, Any]]:
+def _message_items(table: Any, conversation_id: str) -> list[dict[str, Any]]:
     page = table.query(
         KeyConditionExpression="conversation_id = :conversation_id AND begins_with(record_key, :prefix)",
         ExpressionAttributeValues={":conversation_id": conversation_id, ":prefix": "MSG#"},
         ScanIndexForward=False,
         Limit=MAX_CONTEXT_MESSAGES,
     )
-    items = list(reversed(page.get("Items", [])))
+    return list(reversed(page.get("Items", [])))
+
+
+def _load_messages(table: Any, conversation_id: str) -> list[dict[str, Any]]:
+    items = _message_items(table, conversation_id)
     return [
         {
             "role": item["role"],
@@ -195,18 +233,131 @@ def _load_messages(table: Any, conversation_id: str) -> list[dict[str, Any]]:
 
 def _public_messages(table: Any, conversation_id: str) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
-    for message in _load_messages(table, conversation_id):
-        text = "".join(
-            block.get("text", "") for block in message["content"] if isinstance(block, dict)
-        ).strip()
+    for item in _message_items(table, conversation_id):
+        content = json.loads(item["content_json"], object_hook=_content_json_object_hook)
+        text = item.get("display_text")
+        if text is None:
+            text = "".join(
+                block.get("text", "") for block in content if isinstance(block, dict)
+            ).strip()
         tool_names = [
             block["toolUse"]["name"]
-            for block in message["content"]
+            for block in content
             if isinstance(block, dict) and isinstance(block.get("toolUse"), dict)
         ]
-        if text or tool_names:
-            messages.append({"role": message["role"], "text": text, "tools": tool_names})
+        attachments = json.loads(item.get("attachments_json", "[]"))
+        if text or tool_names or attachments:
+            messages.append(
+                {
+                    "role": item["role"],
+                    "text": text,
+                    "tools": tool_names,
+                    "attachments": attachments,
+                }
+            )
     return messages
+
+
+def _safe_filename(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RequestError(400, "filename must be a non-empty string")
+    name = value.strip().replace("\\", "/").rsplit("/", 1)[-1]
+    name = re.sub(r"[^A-Za-z0-9._()\[\] -]", "_", name)[:240]
+    if not name or name in {".", ".."}:
+        raise RequestError(400, "filename is invalid")
+    return name
+
+
+def _part_size(size: int) -> int:
+    required = (size + 9_999) // 10_000
+    mebibyte = 1024**2
+    selected = max(DEFAULT_PART_SIZE, ((required + mebibyte - 1) // mebibyte) * mebibyte)
+    if selected > MAX_PART_SIZE:
+        raise RequestError(400, "file exceeds the S3 multipart upload limit")
+    return selected
+
+
+def _attachment_key(owner_id: str, conversation_id: str, attachment_id: str, name: str) -> str:
+    return f"attachments/{owner_id}/{conversation_id}/{attachment_id}/{name}"
+
+
+def _get_attachment(table: Any, conversation_id: str, attachment_id: str) -> dict[str, Any]:
+    item = table.get_item(
+        Key={"conversation_id": conversation_id, "record_key": f"ATTACH#{attachment_id}"},
+        ConsistentRead=True,
+    ).get("Item")
+    if not item:
+        raise RequestError(404, "attachment not found")
+    return item
+
+
+def _ready_attachments(
+    table: Any, conversation_id: str, attachment_ids: Any
+) -> list[dict[str, Any]]:
+    if attachment_ids is None:
+        return []
+    if not isinstance(attachment_ids, list) or len(attachment_ids) > MAX_ATTACHMENTS_PER_MESSAGE:
+        raise RequestError(
+            400, f"attachment_ids must contain at most {MAX_ATTACHMENTS_PER_MESSAGE} items"
+        )
+    attachments: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for attachment_id in attachment_ids:
+        if not isinstance(attachment_id, str) or not attachment_id or "/" in attachment_id:
+            raise RequestError(400, "attachment id is invalid")
+        if attachment_id in seen:
+            continue
+        seen.add(attachment_id)
+        item = _get_attachment(table, conversation_id, attachment_id)
+        if item.get("status") != "READY":
+            raise RequestError(409, f"attachment {attachment_id} is not ready")
+        attachments.append(
+            {
+                "attachment_id": attachment_id,
+                "filename": item["filename"],
+                "content_type": item["content_type"],
+                "size": int(item["size"]),
+                "s3_uri": item["s3_uri"],
+                "s3_key": item["s3_key"],
+            }
+        )
+    return attachments
+
+
+def _document_name(filename: str) -> str:
+    stem = filename.rsplit(".", 1)[0]
+    cleaned = re.sub(r"[^A-Za-z0-9 ()\[\]-]", " ", stem)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return (cleaned or "attachment")[:120]
+
+
+def _attachment_content(text: str, attachments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = [{"text": text}]
+    if not attachments:
+        return content
+    manifest = ["Operator attachments (private S3 objects):"]
+    for attachment in attachments:
+        manifest.append(
+            f"- {attachment['filename']} | {attachment['content_type']} | "
+            f"{attachment['size']} bytes | {attachment['s3_uri']}"
+        )
+        content_type = attachment["content_type"].lower()
+        suffix = "." + attachment["filename"].lower().rsplit(".", 1)[-1]
+        source = {"s3Location": {"uri": attachment["s3_uri"]}}
+        if content_type in IMAGE_FORMATS and attachment["size"] <= INLINE_IMAGE_BYTES:
+            content.append({"image": {"format": IMAGE_FORMATS[content_type], "source": source}})
+        elif suffix in DOCUMENT_FORMATS and attachment["size"] <= INLINE_DOCUMENT_BYTES:
+            content.append(
+                {
+                    "document": {
+                        "format": DOCUMENT_FORMATS[suffix],
+                        "name": _document_name(attachment["filename"]),
+                        "source": source,
+                    }
+                }
+            )
+    content.insert(1, {"text": "\n".join(manifest)})
+    return content
 
 
 def _invoke_control(lambda_client: Any, function_name: str, method: str, path: str, body: Any) -> Any:
@@ -236,6 +387,7 @@ def _run_tool(
     inputs: Any,
     *,
     conversation_id: str,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> Any:
     if not isinstance(inputs, dict):
         raise ValueError("tool input must be an object")
@@ -252,6 +404,7 @@ def _run_tool(
                 "idea": objective,
                 "task_type": "general_aws",
                 "conversation_id": conversation_id,
+                "attachments": attachments or [],
             },
         )
     if name == "get_job_status":
@@ -270,6 +423,7 @@ def converse(
     control_function_name: str,
     model_id: str,
     conversation_id: str,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     messages = _load_messages(table, conversation_id)
     tool_events: list[dict[str, Any]] = []
@@ -317,6 +471,7 @@ def converse(
                     name,
                     tool_use.get("input", {}),
                     conversation_id=conversation_id,
+                    attachments=attachments,
                 )
                 status = "success"
             except Exception as exc:
@@ -352,6 +507,8 @@ def handle(
     lambda_client: Any,
     control_function_name: str,
     model_id: str,
+    s3: Any = None,
+    attachments_bucket: str = "",
 ) -> dict[str, Any]:
     try:
         method, path, body = _request(event)
@@ -384,6 +541,168 @@ def handle(
             return response(200, {"conversations": conversations[:100]})
 
         parts = path.strip("/").split("/")
+
+        if (
+            len(parts) == 3
+            and parts[0] == "conversations"
+            and parts[2] == "attachments"
+            and method == "POST"
+        ):
+            if s3 is None or not attachments_bucket:
+                raise RuntimeError("attachment storage is not configured")
+            conversation_id = parts[1]
+            _get_meta(table, conversation_id, owner_id)
+            filename = _safe_filename(body.get("filename"))
+            content_type = body.get("content_type") or "application/octet-stream"
+            if not isinstance(content_type, str) or len(content_type) > 200:
+                raise RequestError(400, "content_type is invalid")
+            size = body.get("size")
+            if not isinstance(size, int) or isinstance(size, bool) or not 1 <= size <= MAX_UPLOAD_BYTES:
+                raise RequestError(400, "file size is outside Igor's upload range")
+            attachment_id = uuid.uuid4().hex
+            key = _attachment_key(owner_id, conversation_id, attachment_id, filename)
+            created = s3.create_multipart_upload(
+                Bucket=attachments_bucket,
+                Key=key,
+                ContentType=content_type,
+                ServerSideEncryption="AES256",
+                Metadata={
+                    "igor-owner": owner_id,
+                    "igor-conversation": conversation_id,
+                    "igor-attachment": attachment_id,
+                },
+            )
+            part_size = _part_size(size)
+            part_count = (size + part_size - 1) // part_size
+            timestamp = now_iso()
+            table.put_item(
+                Item={
+                    "conversation_id": conversation_id,
+                    "record_key": f"ATTACH#{attachment_id}",
+                    "attachment_id": attachment_id,
+                    "owner_id": owner_id,
+                    "filename": filename,
+                    "content_type": content_type,
+                    "size": size,
+                    "s3_key": key,
+                    "s3_uri": f"s3://{attachments_bucket}/{key}",
+                    "upload_id": created["UploadId"],
+                    "part_size": part_size,
+                    "part_count": part_count,
+                    "status": "UPLOADING",
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                },
+                ConditionExpression="attribute_not_exists(record_key)",
+            )
+            return response(
+                201,
+                {
+                    "attachment_id": attachment_id,
+                    "filename": filename,
+                    "part_size": part_size,
+                    "part_count": part_count,
+                    "status": "UPLOADING",
+                },
+            )
+
+        if (
+            len(parts) == 5
+            and parts[0] == "conversations"
+            and parts[2] == "attachments"
+            and parts[4] == "part-url"
+            and method == "POST"
+        ):
+            if s3 is None or not attachments_bucket:
+                raise RuntimeError("attachment storage is not configured")
+            conversation_id, attachment_id = parts[1], parts[3]
+            _get_meta(table, conversation_id, owner_id)
+            attachment = _get_attachment(table, conversation_id, attachment_id)
+            if attachment.get("owner_id") != owner_id or attachment.get("status") != "UPLOADING":
+                raise RequestError(409, "attachment is not accepting parts")
+            part_number = body.get("part_number")
+            if (
+                not isinstance(part_number, int)
+                or isinstance(part_number, bool)
+                or not 1 <= part_number <= int(attachment["part_count"])
+            ):
+                raise RequestError(400, "part_number is invalid")
+            url = s3.generate_presigned_url(
+                "upload_part",
+                Params={
+                    "Bucket": attachments_bucket,
+                    "Key": attachment["s3_key"],
+                    "UploadId": attachment["upload_id"],
+                    "PartNumber": part_number,
+                },
+                ExpiresIn=3600,
+            )
+            return response(200, {"url": url, "part_number": part_number})
+
+        if (
+            len(parts) == 5
+            and parts[0] == "conversations"
+            and parts[2] == "attachments"
+            and parts[4] == "complete"
+            and method == "POST"
+        ):
+            if s3 is None or not attachments_bucket:
+                raise RuntimeError("attachment storage is not configured")
+            conversation_id, attachment_id = parts[1], parts[3]
+            _get_meta(table, conversation_id, owner_id)
+            attachment = _get_attachment(table, conversation_id, attachment_id)
+            if attachment.get("owner_id") != owner_id or attachment.get("status") != "UPLOADING":
+                raise RequestError(409, "attachment is not awaiting completion")
+            parts_value = body.get("parts")
+            expected = int(attachment["part_count"])
+            if not isinstance(parts_value, list) or len(parts_value) != expected:
+                raise RequestError(400, f"completion requires exactly {expected} uploaded parts")
+            completed_parts: list[dict[str, Any]] = []
+            for index, part in enumerate(parts_value, 1):
+                if not isinstance(part, dict) or part.get("part_number") != index:
+                    raise RequestError(400, "uploaded parts must be complete and ordered")
+                etag = part.get("etag")
+                if not isinstance(etag, str) or not etag:
+                    raise RequestError(400, "every uploaded part requires an ETag")
+                completed_parts.append({"PartNumber": index, "ETag": etag})
+            s3.complete_multipart_upload(
+                Bucket=attachments_bucket,
+                Key=attachment["s3_key"],
+                UploadId=attachment["upload_id"],
+                MultipartUpload={"Parts": completed_parts},
+            )
+            head = s3.head_object(Bucket=attachments_bucket, Key=attachment["s3_key"])
+            actual_size = int(head["ContentLength"])
+            if actual_size != int(attachment["size"]):
+                s3.delete_object(Bucket=attachments_bucket, Key=attachment["s3_key"])
+                table.update_item(
+                    Key={"conversation_id": conversation_id, "record_key": f"ATTACH#{attachment_id}"},
+                    UpdateExpression="SET #status = :failed, updated_at = :updated, failure = :failure",
+                    ExpressionAttributeNames={"#status": "status"},
+                    ExpressionAttributeValues={
+                        ":failed": "FAILED",
+                        ":updated": now_iso(),
+                        ":failure": "uploaded byte count did not match the selected file",
+                    },
+                )
+                raise RequestError(400, "uploaded byte count did not match the selected file")
+            table.update_item(
+                Key={"conversation_id": conversation_id, "record_key": f"ATTACH#{attachment_id}"},
+                UpdateExpression="SET #status = :ready, updated_at = :updated REMOVE upload_id",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={":ready": "READY", ":updated": now_iso()},
+            )
+            return response(
+                200,
+                {
+                    "attachment_id": attachment_id,
+                    "filename": attachment["filename"],
+                    "content_type": attachment["content_type"],
+                    "size": actual_size,
+                    "status": "READY",
+                },
+            )
+
         if len(parts) == 2 and parts[0] == "conversations" and method == "GET":
             meta = _get_meta(table, parts[1], owner_id)
             return response(
@@ -399,18 +718,25 @@ def handle(
         ):
             conversation_id = parts[1]
             meta = _get_meta(table, conversation_id, owner_id)
-            text = body.get("message")
-            if not isinstance(text, str) or not text.strip():
-                raise RequestError(400, "message must be a non-empty string")
+            text = body.get("message", "")
+            if not isinstance(text, str):
+                raise RequestError(400, "message must be a string")
             text = text.strip()
             if len(text) > MAX_MESSAGE_LENGTH:
                 raise RequestError(400, f"message exceeds {MAX_MESSAGE_LENGTH} characters")
+            attachments = _ready_attachments(table, conversation_id, body.get("attachment_ids"))
+            if not text and not attachments:
+                raise RequestError(400, "message or attachment is required")
+            if not text:
+                text = "Inspect the attached file or files."
 
             _put_message(
                 table,
                 conversation_id=conversation_id,
                 role="user",
-                content=[{"text": text}],
+                content=_attachment_content(text, attachments),
+                display_text=text,
+                attachments=attachments,
             )
             timestamp = now_iso()
             update = "SET updated_at = :updated"
@@ -431,6 +757,7 @@ def handle(
                 control_function_name=control_function_name,
                 model_id=model_id,
                 conversation_id=conversation_id,
+                attachments=attachments,
             )
             return response(200, {"conversation_id": conversation_id, **result})
 
@@ -452,4 +779,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         lambda_client=boto3.client("lambda"),
         control_function_name=os.environ["CONTROL_FUNCTION_NAME"],
         model_id=os.environ["DEFAULT_MODEL_ID"],
+        s3=boto3.client("s3"),
+        attachments_bucket=os.environ["ATTACHMENTS_BUCKET"],
     )

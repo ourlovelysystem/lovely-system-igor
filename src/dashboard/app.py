@@ -34,7 +34,7 @@ def render_dashboard(*, api_url: str, client_id: str, region: str) -> dict[str, 
     result["headers"]["content-security-policy"] = (
         "default-src 'none'; "
         "base-uri 'none'; "
-        f"connect-src {api_origin} {cognito_origin}; "
+        f"connect-src {api_origin} {cognito_origin} https://s3.amazonaws.com https://*.amazonaws.com; "
         "form-action 'self'; frame-ancestors 'none'; "
         "script-src 'unsafe-inline'; style-src 'unsafe-inline'"
     )

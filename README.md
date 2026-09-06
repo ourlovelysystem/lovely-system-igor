@@ -27,7 +27,7 @@ JSON evidence record in S3. A model's claim is never accepted as proof.
 - CodeBuild: isolated worker
 - Bedrock: configurable conversational and execution model
 - AWS CLI and development tools: general execution inside CodeBuild
-- S3: complete worker workspace archives and evidence
+- S3: private multipart attachments, complete worker workspace archives, and evidence
 - CloudWatch: Lambda and CodeBuild logs
 - IAM: separate control, worker, legacy deployment, and passable workload roles
 
@@ -53,6 +53,25 @@ first invited dashboard operator, then open the dashboard URL:
 
 Cognito emails a temporary password. The dashboard asks for a permanent
 password on first sign-in. Public account creation is disabled.
+
+## Attachments and visible progress
+
+The dashboard accepts images, PDFs, documents, and arbitrary files. Upload bytes
+go directly from the browser to Igor's private S3 bucket using multipart upload;
+they do not pass through Lambda or API Gateway. Four parts transfer concurrently,
+the dashboard shows byte progress, and abandoned multipart uploads expire after
+seven days. The implementation supports the S3 multipart ceiling of 10,000 parts
+at 5 GiB per part.
+
+Supported images and documents within the conversational model's direct-input
+threshold are presented to Bedrock from S3. Every other attachment, including
+very large files, is passed to the execution worker by private S3 URI so it can
+inspect the object with streaming or range-based tools.
+
+While a job runs, the worker records its current stage, plain-language command
+purpose, agent round, and completed command count in DynamoDB. The open dashboard
+conversation displays those updates every three seconds and replaces them with
+the durable terminal report when the job finishes.
 
 The CLI remains available. Submit an idea:
 
@@ -111,6 +130,8 @@ See [docs/architecture.md](docs/architecture.md) for the data flow and
 - Every job retains its originating conversation. Its terminal summary,
   resources, endpoints, and evidence locations are written back as a durable
   Igor message, and the open dashboard conversation refreshes automatically.
+- Job progress is durable rather than cosmetic: the worker updates the job record
+  before and after each command, and the dashboard displays that record inline.
 - The worker reads this public repository at build time.
 - The CLI control URL uses AWS IAM signing. The dashboard API requires a
   Cognito token from an invited operator.

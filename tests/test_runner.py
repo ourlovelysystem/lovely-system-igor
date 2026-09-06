@@ -150,6 +150,13 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("GITHUB_TOKEN_SECRET_NAME", template)
         self.assertIn("github-credential.py configure", template)
 
+    def test_template_supports_private_large_attachments(self):
+        template = (Path(__file__).parents[1] / "template.yaml").read_text()
+        self.assertIn("AbortIncompleteMultipartUpload", template)
+        self.assertIn("POST /conversations/{conversation_id}/attachments", template)
+        self.assertIn("ATTACHMENTS_BUCKET", template)
+        self.assertIn("${EvidenceBucket.Arn}/attachments/*", template)
+
     def test_github_token_secret_must_be_nonempty(self):
         self.assertEqual(
             "github-token",
@@ -263,6 +270,34 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual("conversation-123", completion["conversation_id"])
         self.assertEqual("WORKING", completion["terminal_status"])
         self.assertIn("Service created and verified.", completion["content_json"])
+        progress_updates = [
+            call.kwargs["ExpressionAttributeValues"]
+            for call in table.update_item.call_args_list
+            if "ExpressionAttributeValues" in call.kwargs
+        ]
+        self.assertTrue(
+            any(
+                "progress_message" in str(values) or "Planning the next action" in str(values)
+                for values in progress_updates
+            )
+        )
+
+    def test_attachment_manifest_preserves_large_s3_object_location(self):
+        manifest = runner.Worker.attachment_manifest(
+            {
+                "attachments": [
+                    {
+                        "filename": "huge.pdf",
+                        "content_type": "application/pdf",
+                        "size": 8 * 1024**3,
+                        "s3_uri": "s3://igor/attachments/operator/chat/file/huge.pdf",
+                    }
+                ]
+            }
+        )
+        self.assertIn("huge.pdf", manifest)
+        self.assertIn("s3://igor/attachments/operator/chat/file/huge.pdf", manifest)
+        self.assertIn("range requests", manifest)
 
 
 if __name__ == "__main__":

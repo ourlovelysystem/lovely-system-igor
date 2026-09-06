@@ -5,16 +5,23 @@
 1. An operator signs in to the dashboard through Cognito, or uses the
    IAM-authenticated CLI.
 2. API Gateway validates dashboard tokens before invoking Igor.
-3. The conversational Lambda loads durable context, calls Terra, and submits
-   the operator's complete objective through one general execution tool.
-4. The control Lambda writes a `QUEUED` record and starts CodeBuild.
-5. The worker changes the job to `RUNNING` and starts an agentic Terra loop.
-6. Terra uses `run_command` to inspect AWS, create files, operate services,
+3. Attached files upload directly from the browser to private S3 using signed
+   multipart part URLs. Lambda handles metadata and signatures, not file bytes.
+4. The conversational Lambda loads durable context, gives supported images and
+   documents to Bedrock by S3 location, and submits arbitrary or large-file work
+   with the operator's complete attachment manifest.
+5. The conversational Lambda calls Terra and submits the operator's complete
+   objective through one general execution tool.
+6. The control Lambda writes a `QUEUED` record and starts CodeBuild.
+7. The worker changes the job to `RUNNING` and starts an agentic Terra loop.
+8. Before and after each command, the worker records a plain-language progress
+   message in DynamoDB. The dashboard displays the current record every three seconds.
+9. Terra uses `run_command` to inspect AWS, create files, operate services,
    observe failures, and verify the resulting live state.
-7. Igor validates Terra's terminal evidence request. Changed systems require a
+10. Igor validates Terra's terminal evidence request. Changed systems require a
    cited successful verification command after the last change.
-8. Igor independently probes every claimed public HTTP endpoint.
-9. Igor archives the complete worker workspace and command transcript to S3,
+11. Igor independently probes every claimed public HTTP endpoint.
+12. Igor archives the complete worker workspace and command transcript to S3,
    writes the terminal result into the originating conversation, then records
    `WORKING`, `FAILED`, `BLOCKED`, or `INCOMPLETE` in DynamoDB. The dashboard
    observes the job transition and refreshes the open conversation.

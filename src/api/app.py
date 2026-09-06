@@ -99,6 +99,16 @@ def handle(
         if not isinstance(model_id, str) or not model_id.strip():
             return response(400, {"error": "model_id must be a non-empty string"})
 
+        attachments = body.get("attachments", [])
+        if not isinstance(attachments, list) or len(attachments) > 20:
+            return response(400, {"error": "attachments must contain at most 20 items"})
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                return response(400, {"error": "every attachment must be an object"})
+            s3_uri = attachment.get("s3_uri")
+            if not isinstance(s3_uri, str) or not s3_uri.startswith("s3://"):
+                return response(400, {"error": "every attachment requires an S3 URI"})
+
         job_id = uuid.uuid4().hex
         timestamp = now_iso()
         item = {
@@ -108,9 +118,13 @@ def handle(
             "idea": idea,
             "model_id": model_id.strip(),
             "status": "QUEUED",
+            "stage": "queued",
+            "progress_message": "Waiting for an execution worker.",
             "created_at": timestamp,
             "updated_at": timestamp,
         }
+        if attachments:
+            item["attachments"] = attachments
         conversation_id = body.get("conversation_id")
         if conversation_id is not None:
             if not isinstance(conversation_id, str) or not conversation_id.strip():

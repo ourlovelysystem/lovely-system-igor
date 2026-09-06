@@ -104,3 +104,25 @@ key, and deployment enables the configured secret for future workers.
 
 Local result: 28 tests pass. GitHub App creation, installation, secret setup,
 deployment, and live push verification are pending.
+
+## 2026-09-06 — direct attachments and visible work progress
+
+Will Daly selected two missing capabilities: Igor must read screenshots, images,
+PDFs, and uploaded files directly, and it must keep him informed while work is
+underway instead of merely returning a job ID. He then made large-upload support
+an explicit requirement.
+
+The dashboard now performs private S3 multipart uploads directly from the
+browser, using four concurrent parts and visible byte progress. File bytes do not
+pass through Lambda or API Gateway. Supported small images and documents are
+presented to Bedrock by S3 location. Arbitrary and large files remain private in
+S3 and travel with the job as an exact attachment manifest for streaming or
+range-based worker inspection.
+
+The worker now writes a plain-language progress message before and after every
+command, along with its stage, agent round, and command count. The dashboard
+shows that durable job state inline in the active conversation every three
+seconds and replaces it with the terminal report when work finishes.
+
+Local result: 36 tests pass. Template, browser, and live AWS validation remain
+pending.

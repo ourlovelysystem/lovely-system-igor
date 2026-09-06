@@ -29,6 +29,7 @@ class ConversationTests(unittest.TestCase):
         self.table = Mock()
         self.bedrock = Mock()
         self.lambda_client = Mock()
+        self.s3 = Mock()
 
     def call(self, method, path, body=None, owner="operator-1"):
         return conversation.handle(
@@ -38,6 +39,8 @@ class ConversationTests(unittest.TestCase):
             lambda_client=self.lambda_client,
             control_function_name="igor-control",
             model_id="global.openai.gpt-5.6-terra",
+            s3=self.s3,
+            attachments_bucket="igor-evidence",
         )
 
     def test_create_conversation_records_owner(self):
@@ -179,6 +182,97 @@ class ConversationTests(unittest.TestCase):
             json.loads(invoked["body"])["idea"],
         )
         self.assertEqual("abc", json.loads(invoked["body"])["conversation_id"])
+
+    def test_initiates_multipart_upload_without_sending_file_through_lambda(self):
+        self.table.get_item.return_value = {
+            "Item": {"conversation_id": "abc", "record_key": "META", "owner_id": "operator-1"}
+        }
+        self.s3.create_multipart_upload.return_value = {"UploadId": "upload-123"}
+
+        result = self.call(
+            "POST",
+            "/conversations/abc/attachments",
+            {"filename": "large log.txt", "content_type": "text/plain", "size": 6 * 1024**3},
+        )
+
+        self.assertEqual(201, result["statusCode"])
+        body = json.loads(result["body"])
+        self.assertGreater(body["part_count"], 1)
+        stored = self.table.put_item.call_args.kwargs["Item"]
+        self.assertEqual("UPLOADING", stored["status"])
+        self.assertEqual(6 * 1024**3, stored["size"])
+        self.assertTrue(stored["s3_key"].startswith("attachments/operator-1/abc/"))
+
+    def test_small_image_is_passed_to_bedrock_from_private_s3(self):
+        attachment = {
+            "attachment_id": "image-1",
+            "filename": "screen.png",
+            "content_type": "image/png",
+            "size": 1000,
+            "s3_uri": "s3://igor/attachments/operator/abc/image-1/screen.png",
+            "s3_key": "attachments/operator/abc/image-1/screen.png",
+        }
+        content = conversation._attachment_content("What is wrong here?", [attachment])
+        image = next(block["image"] for block in content if "image" in block)
+        self.assertEqual("png", image["format"])
+        self.assertEqual(attachment["s3_uri"], image["source"]["s3Location"]["uri"])
+
+    def test_pdf_is_passed_to_bedrock_from_private_s3(self):
+        attachment = {
+            "attachment_id": "pdf-1",
+            "filename": "inspection report.pdf",
+            "content_type": "application/pdf",
+            "size": 5000,
+            "s3_uri": "s3://igor/attachments/operator/abc/pdf-1/report.pdf",
+            "s3_key": "attachments/operator/abc/pdf-1/report.pdf",
+        }
+        content = conversation._attachment_content("Review it", [attachment])
+        document = next(block["document"] for block in content if "document" in block)
+        self.assertEqual("pdf", document["format"])
+        self.assertEqual("inspection report", document["name"])
+        self.assertEqual(attachment["s3_uri"], document["source"]["s3Location"]["uri"])
+
+    def test_completes_uploaded_parts_and_verifies_total_size(self):
+        metadata = {"conversation_id": "abc", "record_key": "META", "owner_id": "operator-1"}
+        attachment = {
+            "conversation_id": "abc",
+            "record_key": "ATTACH#file-1",
+            "attachment_id": "file-1",
+            "owner_id": "operator-1",
+            "filename": "large.zip",
+            "content_type": "application/zip",
+            "size": 1024,
+            "s3_key": "attachments/operator-1/abc/file-1/large.zip",
+            "upload_id": "upload-1",
+            "part_count": 1,
+            "status": "UPLOADING",
+        }
+        self.table.get_item.side_effect = [{"Item": metadata}, {"Item": attachment}]
+        self.s3.head_object.return_value = {"ContentLength": 1024}
+
+        result = self.call(
+            "POST",
+            "/conversations/abc/attachments/file-1/complete",
+            {"parts": [{"part_number": 1, "etag": '"etag-1"'}]},
+        )
+
+        self.assertEqual(200, result["statusCode"])
+        self.s3.complete_multipart_upload.assert_called_once()
+        update = self.table.update_item.call_args.kwargs
+        self.assertEqual("READY", update["ExpressionAttributeValues"][":ready"])
+
+    def test_large_file_stays_in_s3_for_worker_inspection(self):
+        attachment = {
+            "attachment_id": "large-1",
+            "filename": "archive.bin",
+            "content_type": "application/octet-stream",
+            "size": 2 * 1024**3,
+            "s3_uri": "s3://igor/attachments/operator/abc/large-1/archive.bin",
+            "s3_key": "attachments/operator/abc/large-1/archive.bin",
+        }
+        content = conversation._attachment_content("Inspect this", [attachment])
+        self.assertFalse(any("image" in block or "document" in block for block in content))
+        self.assertIn(attachment["s3_uri"], content[1]["text"])
 
 
 if __name__ == "__main__":

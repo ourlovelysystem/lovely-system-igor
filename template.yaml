@@ -68,6 +68,23 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - PUT
+            AllowedOrigins:
+              - "*"
+            ExposedHeaders:
+              - ETag
+            MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteAttachmentUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -201,6 +218,9 @@ Resources:
                   - s3:GetObject
                   - s3:PutObject
                 Resource: !Sub ${EvidenceBucket.Arn}/jobs/*
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub ${EvidenceBucket.Arn}/attachments/*
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
@@ -387,6 +407,13 @@ Resources:
                   - bedrock:InvokeModelWithResponseStream
                 Resource: "*"
               - Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:DeleteObject
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub ${EvidenceBucket.Arn}/attachments/*
+              - Effect: Allow
                 Action: lambda:InvokeFunction
                 Resource: !GetAtt ControlFunction.Arn
 
@@ -406,6 +433,7 @@ Resources:
           CONVERSATIONS_TABLE: !Ref ConversationsTable
           CONTROL_FUNCTION_NAME: !Ref ControlFunction
           DEFAULT_MODEL_ID: !Ref DefaultModelId
+          ATTACHMENTS_BUCKET: !Ref EvidenceBucket
 
   OperatorPool:
     Type: AWS::Cognito::UserPool
@@ -555,6 +583,33 @@ Resources:
       AuthorizationType: JWT
       AuthorizerId: !Ref DashboardAuthorizer
       RouteKey: POST /conversations/{conversation_id}/messages
+      Target: !Sub integrations/${ConversationIntegration}
+
+  DashboardInitiateAttachmentRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DashboardApi
+      AuthorizationType: JWT
+      AuthorizerId: !Ref DashboardAuthorizer
+      RouteKey: POST /conversations/{conversation_id}/attachments
+      Target: !Sub integrations/${ConversationIntegration}
+
+  DashboardAttachmentPartUrlRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DashboardApi
+      AuthorizationType: JWT
+      AuthorizerId: !Ref DashboardAuthorizer
+      RouteKey: POST /conversations/{conversation_id}/attachments/{attachment_id}/part-url
+      Target: !Sub integrations/${ConversationIntegration}
+
+  DashboardCompleteAttachmentRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DashboardApi
+      AuthorizationType: JWT
+      AuthorizerId: !Ref DashboardAuthorizer
+      RouteKey: POST /conversations/{conversation_id}/attachments/{attachment_id}/complete
       Target: !Sub integrations/${ConversationIntegration}
 
   DashboardStage:

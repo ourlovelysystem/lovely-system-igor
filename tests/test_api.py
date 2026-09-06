@@ -56,6 +56,21 @@ class ApiTests(unittest.TestCase):
         item = self.table.put_item.call_args.kwargs["Item"]
         self.assertEqual("conversation-123", item["conversation_id"])
 
+    def test_submit_carries_private_s3_attachments_to_worker(self):
+        attachment = {
+            "attachment_id": "file-1",
+            "filename": "inventory.csv",
+            "content_type": "text/csv",
+            "size": 1234,
+            "s3_uri": "s3://igor/attachments/operator/conversation/file-1/inventory.csv",
+            "s3_key": "attachments/operator/conversation/file-1/inventory.csv",
+        }
+        result = self.call("POST", "/jobs", {"idea": "Inspect it", "attachments": [attachment]})
+        self.assertEqual(202, result["statusCode"])
+        item = self.table.put_item.call_args.kwargs["Item"]
+        self.assertEqual([attachment], item["attachments"])
+        self.assertEqual("Waiting for an execution worker.", item["progress_message"])
+
     def test_get_returns_durable_job(self):
         self.table.get_item.return_value = {"Item": {"job_id": "abc", "status": "WORKING"}}
         result = self.call("GET", "/jobs/abc")

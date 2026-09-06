@@ -495,6 +495,27 @@ last change. Use BLOCKED for missing permission, quota, unavailable service, or 
 prerequisite. Use FAILED for an attempted task that did not work, and INCOMPLETE only when time or
 evidence ran out. A model statement is never proof."""
 
+    @staticmethod
+    def attachment_manifest(item: dict[str, Any]) -> str:
+        attachments = item.get("attachments") or []
+        if not attachments:
+            return ""
+        lines = ["", "Operator-provided attachments are private S3 objects:"]
+        for attachment in attachments:
+            lines.append(
+                f"- {attachment.get('filename', 'attachment')} | "
+                f"{attachment.get('content_type', 'application/octet-stream')} | "
+                f"{attachment.get('size', 'unknown')} bytes | {attachment.get('s3_uri')}"
+            )
+        lines.extend(
+            [
+                "Inspect these objects as required using AWS CLI or code. For large objects, use S3",
+                "range requests, streaming, Select, or another bounded method instead of assuming the",
+                "whole object fits in memory or local storage.",
+            ]
+        )
+        return "\n".join(lines)
+
     def _run_command_tool(
         self,
         *,
@@ -590,7 +611,7 @@ evidence ran out. A model statement is never proof."""
     def run_general(self, job_id: str, item: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
         workspace = f"/tmp/igor-work-{job_id}"
         Path(workspace).mkdir(mode=0o700, parents=True, exist_ok=False)
-        objective = item.get("objective") or item["idea"]
+        objective = (item.get("objective") or item["idea"]) + self.attachment_manifest(item)
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": [{"text": objective}]}
         ]
@@ -601,7 +622,11 @@ evidence ran out. A model statement is never proof."""
             self.update(
                 job_id,
                 "RUNNING",
-                stage="agent_execute",
+                stage="planning",
+                progress_message=(
+                    f"Planning the next action · round {round_number} · "
+                    f"{len(commands)} commands completed"
+                ),
                 agent_round=round_number,
                 command_count=len(commands),
             )
@@ -652,12 +677,40 @@ evidence ran out. A model statement is never proof."""
                 tool_use_id = tool_use.get("toolUseId")
                 try:
                     if name == "run_command":
+                        tool_input = tool_use.get("input")
+                        purpose = (
+                            tool_input.get("purpose", "Running a command")
+                            if isinstance(tool_input, dict)
+                            else "Running a command"
+                        )
+                        category = (
+                            tool_input.get("category", "execute")
+                            if isinstance(tool_input, dict)
+                            else "execute"
+                        )
+                        self.update(
+                            job_id,
+                            "RUNNING",
+                            stage=category,
+                            progress_message=purpose[:500],
+                            agent_round=round_number,
+                            command_count=len(commands),
+                        )
                         command_record = self._run_command_tool(
-                            tool_input=tool_use.get("input"),
+                            tool_input=tool_input,
                             workspace=workspace,
                             command_number=len(commands) + 1,
                         )
                         commands.append(command_record)
+                        outcome = "Completed" if command_record["exit_code"] == 0 else "Command failed"
+                        self.update(
+                            job_id,
+                            "RUNNING",
+                            stage=category,
+                            progress_message=f"{outcome}: {purpose}"[:500],
+                            agent_round=round_number,
+                            command_count=len(commands),
+                        )
                         output: Any = command_record
                         tool_status = (
                             "success" if command_record["exit_code"] == 0 else "error"
@@ -709,6 +762,14 @@ evidence ran out. A model statement is never proof."""
                         )
                         continue
                 finished_at = now_iso()
+                self.update(
+                    job_id,
+                    "RUNNING",
+                    stage="archiving",
+                    progress_message="Saving the workspace and execution evidence.",
+                    agent_round=round_number,
+                    command_count=len(commands),
+                )
                 workspace_uri = self.put_workspace(job_id, workspace)
                 evidence.update(
                     {
@@ -737,6 +798,7 @@ evidence ran out. A model statement is never proof."""
                     "workspace_uri": workspace_uri,
                     "finished_at": finished_at,
                     "command_count": len(commands),
+                    "progress_message": finish_request["summary"][:500],
                 }
                 if finish_request["public_endpoints"]:
                     fields["endpoint"] = finish_request["public_endpoints"][0]
@@ -793,6 +855,7 @@ evidence ran out. A model statement is never proof."""
             workspace_uri=workspace_uri,
             finished_at=finished_at,
             command_count=len(commands),
+            progress_message=summary[:500],
         )
         return evidence
 
@@ -853,7 +916,13 @@ evidence ran out. A model statement is never proof."""
 
     def run(self, job_id: str) -> dict[str, Any]:
         started_at = now_iso()
-        self.update(job_id, "RUNNING", stage="load_job", started_at=started_at)
+        self.update(
+            job_id,
+            "RUNNING",
+            stage="load_job",
+            progress_message="Execution worker started; loading the job.",
+            started_at=started_at,
+        )
         item = self.table.get_item(Key={"job_id": job_id}, ConsistentRead=True).get("Item")
         if not item:
             raise ValueError(f"job {job_id} does not exist")
@@ -871,21 +940,35 @@ evidence ran out. A model statement is never proof."""
             if item.get("task_type") == "general_aws":
                 return self.run_general(job_id, item, evidence)
 
-            self.update(job_id, "RUNNING", stage="generate")
+            self.update(
+                job_id, "RUNNING", stage="generate", progress_message="Generating the workload."
+            )
             generated = model_request(
                 self.bedrock, model_id=item["model_id"], idea=item["idea"]
             )
             evidence["description"] = generated["description"]
 
-            self.update(job_id, "RUNNING", stage="static_validation")
+            self.update(
+                job_id,
+                "RUNNING",
+                stage="static_validation",
+                progress_message="Checking the generated workload before deployment.",
+            )
             check = validate_source(generated["app_py"])
             evidence["checks"].append(check)
 
-            self.update(job_id, "RUNNING", stage="deploy")
+            self.update(
+                job_id, "RUNNING", stage="deploy", progress_message="Deploying the workload."
+            )
             stack_id, endpoint = self.deploy(job_id, generated["app_py"])
             evidence["deployment"] = {"stack_id": stack_id, "endpoint": endpoint}
 
-            self.update(job_id, "RUNNING", stage="live_probe")
+            self.update(
+                job_id,
+                "RUNNING",
+                stage="live_probe",
+                progress_message="Testing the deployed endpoint.",
+            )
             probe = self.probe(endpoint)
             evidence["checks"].append({"check": "live_http_probe", **probe})
             evidence.update({"status": "WORKING", "finished_at": now_iso()})
@@ -893,10 +976,11 @@ evidence ran out. A model statement is never proof."""
             self.publish_completion(
                 item=item,
                 job_id=job_id,
-                status=status,
-                summary=failure["message"],
+                status="WORKING",
+                summary=generated["description"],
                 evidence_uri=evidence_uri,
                 finished_at=evidence["finished_at"],
+                progress_message=generated["description"][:500],
             )
             self.update(
                 job_id,
@@ -915,6 +999,14 @@ evidence ran out. A model statement is never proof."""
                 {"status": status, "failure": failure, "finished_at": now_iso()}
             )
             evidence_uri = self.put_evidence(job_id, evidence)
+            self.publish_completion(
+                item=item,
+                job_id=job_id,
+                status=status,
+                summary=failure["message"],
+                evidence_uri=evidence_uri,
+                finished_at=evidence["finished_at"],
+            )
             self.update(
                 job_id,
                 status,
@@ -922,6 +1014,7 @@ evidence ran out. A model statement is never proof."""
                 failure=failure,
                 evidence_uri=evidence_uri,
                 finished_at=evidence["finished_at"],
+                progress_message=failure["message"][:500],
             )
             raise
 
