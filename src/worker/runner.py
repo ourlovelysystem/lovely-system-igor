@@ -40,6 +40,29 @@ MAX_SOURCE_BYTES = 50_000
 TERMINAL_STATES = {"WORKING", "FAILED", "BLOCKED", "INCOMPLETE"}
 MAX_AGENT_ROUNDS = 30
 MAX_COMMAND_OUTPUT_CHARS = 20_000
+MAX_WORK_EVENTS = 200
+
+# Event text is operator-facing and intentionally excludes command lines and command output.
+_SECRET_VALUE = re.compile(r"(?i)\b(token|secret|password|api[_-]?key|authorization)\b\s*([:=])\s*[^\s,;]+")
+_SECRET_LITERAL = re.compile(r"\b(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")
+
+
+def safe_event_text(value: Any, limit: int = 500) -> str:
+    text = str(value).strip()
+    text = _SECRET_VALUE.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", text)
+    text = _SECRET_LITERAL.sub("[REDACTED]", text)
+    return text[:limit]
+
+
+def command_activity(command: str, category: str) -> str:
+    """Classify an action without exposing its potentially sensitive command line."""
+    if category == "verify":
+        return "verification"
+    if re.search(r"\bgit\b[^\n;&|]*\bpush\b|\b(?:publish|release)\b", command, re.I):
+        return "publication"
+    if re.search(r"\b(?:sam|cloudformation)\s+(?:deploy|create-stack|update-stack)\b|\bdeploy\b", command, re.I):
+        return "deployment"
+    return category
 
 GENERAL_TOOL_CONFIG = {
     "tools": [
@@ -373,6 +396,20 @@ class Worker:
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
         )
+
+    def record_event(self, job_id: str, event_type: str, message: str, **fields: Any) -> None:
+        """Append a small durable event that the dashboard can poll during and after work."""
+        event = {"at": now_iso(), "type": event_type, "message": safe_event_text(message), **fields}
+        # DynamoDB list_append preserves completion history; keep the item bounded for predictable reads.
+        item = self.table.get_item(Key={"job_id": job_id}, ConsistentRead=True).get("Item", {})
+        if not isinstance(item, dict):
+            item = {}
+        previous = item.get("work_events", [])
+        events = list(previous) if isinstance(previous, list) else []
+        events = events[-(MAX_WORK_EVENTS - 1):]
+        events.append(event)
+        self.update(job_id, item.get("status", "RUNNING"),
+                    work_events=events, current_activity=event["message"])
 
     def put_evidence(self, job_id: str, evidence: dict[str, Any]) -> str:
         key = f"jobs/{job_id}/evidence.json"
@@ -719,6 +756,7 @@ evidence ran out. A model statement is never proof."""
         visible_reasoning: list[str] = []
 
         for round_number in range(1, MAX_AGENT_ROUNDS + 1):
+            self.record_event(job_id, "activity", f"Planning the next action (round {round_number}).", stage="planning", round=round_number)
             self.update(
                 job_id,
                 "RUNNING",
@@ -788,6 +826,9 @@ evidence ran out. A model statement is never proof."""
                             if isinstance(tool_input, dict)
                             else "execute"
                         )
+                        event_activity = command_activity(str(tool_input.get("command", "")) if isinstance(tool_input, dict) else "", str(category))
+                        command_id = f"cmd-{len(commands) + 1:03d}"
+                        self.record_event(job_id, "command_started", f"Started {event_activity}: {purpose}", command_id=command_id, category=category, activity=event_activity, stage=category)
                         self.update(
                             job_id,
                             "RUNNING",
@@ -803,6 +844,8 @@ evidence ran out. A model statement is never proof."""
                         )
                         commands.append(command_record)
                         outcome = "Completed" if command_record["exit_code"] == 0 else "Command failed"
+                        event_type = "command_completed" if command_record["exit_code"] == 0 else "failure"
+                        self.record_event(job_id, event_type, f"{outcome} {event_activity}: {purpose} (exit {command_record['exit_code']}).", command_id=command_record["command_id"], category=category, activity=event_activity, exit_code=command_record["exit_code"], stage=category)
                         self.update(
                             job_id,
                             "RUNNING",
@@ -868,6 +911,7 @@ evidence ran out. A model statement is never proof."""
                         )
                         continue
                 finished_at = now_iso()
+                self.record_event(job_id, "activity", "Saving the workspace and execution evidence.", stage="archiving")
                 self.update(
                     job_id,
                     "RUNNING",
@@ -926,6 +970,7 @@ evidence ran out. A model statement is never proof."""
                     public_endpoints=finish_request["public_endpoints"],
                     finished_at=finished_at,
                 )
+                self.record_event(job_id, "completed" if status == "WORKING" else "failure", finish_request["summary"], stage=fields["stage"], terminal_status=status)
                 self.update(job_id, status, **fields)
                 return evidence
 
@@ -954,6 +999,7 @@ evidence ran out. A model statement is never proof."""
             workspace_uri=workspace_uri,
             finished_at=finished_at,
         )
+        self.record_event(job_id, "failure", summary, stage="agent_execute", terminal_status="INCOMPLETE")
         self.update(
             job_id,
             "INCOMPLETE",
@@ -1024,6 +1070,7 @@ evidence ran out. A model statement is never proof."""
 
     def run(self, job_id: str) -> dict[str, Any]:
         started_at = now_iso()
+        self.record_event(job_id, "worker_started", "Execution worker started; loading the job.", stage="load_job")
         self.update(
             job_id,
             "RUNNING",
@@ -1115,6 +1162,7 @@ evidence ran out. A model statement is never proof."""
                 evidence_uri=evidence_uri,
                 finished_at=evidence["finished_at"],
             )
+            self.record_event(job_id, "failure", failure["message"], stage=failure["stage"], terminal_status=status)
             self.update(
                 job_id,
                 status,

@@ -20,6 +20,11 @@ MAX_IDEA_LENGTH = 10_000
 MAX_LISTED_JOBS = 100
 
 
+def work_event(event_type: str, message: str, **fields: Any) -> dict[str, Any]:
+    """Create an operator-safe event; never put command text or output here."""
+    return {"at": now_iso(), "type": event_type, "message": message, **fields}
+
+
 def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -122,6 +127,8 @@ def handle(
             "progress_message": "Waiting for an execution worker.",
             "created_at": timestamp,
             "updated_at": timestamp,
+            "current_activity": "Waiting for an execution worker.",
+            "work_events": [work_event("queued", "Job queued; waiting for an execution worker.")],
         }
         if attachments:
             item["attachments"] = attachments
@@ -141,12 +148,15 @@ def handle(
         except Exception as exc:
             table.update_item(
                 Key={"job_id": job_id},
-                UpdateExpression="SET #s = :status, updated_at = :updated, failure = :failure",
+                UpdateExpression="SET #s = :status, updated_at = :updated, failure = :failure, current_activity = :activity, work_events = list_append(if_not_exists(work_events, :empty), :events)",
                 ExpressionAttributeNames={"#s": "status"},
                 ExpressionAttributeValues={
                     ":status": "FAILED",
                     ":updated": now_iso(),
                     ":failure": {"stage": "queue", "message": str(exc)[:1000]},
+                    ":activity": "Unable to start the execution worker.",
+                    ":empty": [],
+                    ":events": [work_event("failure", "Unable to start the execution worker.", stage="queue")],
                 },
             )
             return response(502, {"job_id": job_id, "status": "FAILED", "error": str(exc)})
@@ -154,8 +164,8 @@ def handle(
         build_id = build.get("build", {}).get("id", "unknown")
         table.update_item(
             Key={"job_id": job_id},
-            UpdateExpression="SET build_id = :build_id, updated_at = :updated",
-            ExpressionAttributeValues={":build_id": build_id, ":updated": now_iso()},
+            UpdateExpression="SET build_id = :build_id, updated_at = :updated, current_activity = :activity, work_events = list_append(if_not_exists(work_events, :empty), :events)",
+            ExpressionAttributeValues={":build_id": build_id, ":updated": now_iso(), ":activity": "Execution worker accepted the job.", ":empty": [], ":events": [work_event("worker_started", "Execution worker accepted the job.")]},
         )
         return response(202, {"job_id": job_id, "status": "QUEUED", "build_id": build_id})
 

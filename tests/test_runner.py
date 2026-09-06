@@ -398,3 +398,26 @@ class RunnerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class LiveWorkEventTests(unittest.TestCase):
+    def test_event_text_redacts_credentials_and_command_activity_is_classified(self):
+        text = runner.safe_event_text("publish token=ghp_abcdefghijklmnopqrstuvwxyz123456")
+        self.assertNotIn("ghp_", text)
+        self.assertIn("[REDACTED]", text)
+        self.assertEqual("verification", runner.command_activity("python -m unittest", "verify"))
+        self.assertEqual("publication", runner.command_activity("git push origin main", "change"))
+        self.assertEqual("deployment", runner.command_activity("sam deploy", "change"))
+
+    def test_record_event_persists_safe_completed_event_with_exit_status(self):
+        table = Mock()
+        table.get_item.return_value = {"Item": {"status": "RUNNING", "work_events": []}}
+        worker = runner.Worker(
+            table=table, bedrock=Mock(), s3=Mock(), cloudformation=Mock(), evidence_bucket="bucket",
+            execution_role_arn="role", cloudformation_role_arn="role",
+        )
+        worker.record_event("job-1", "command_completed", "Completed verification: token=secret", command_id="cmd-001", exit_code=0)
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        event = values[":value0"][-1]
+        self.assertEqual("command_completed", event["type"])
+        self.assertEqual(0, event["exit_code"])
+        self.assertNotIn("secret", event["message"])

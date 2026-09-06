@@ -33,6 +33,9 @@ class ApiTests(unittest.TestCase):
     def test_submit_persists_before_starting_worker(self):
         result = self.call("POST", "/jobs", {"idea": "Build a greeting API"})
         self.assertEqual(202, result["statusCode"])
+        stored = self.table.put_item.call_args.kwargs["Item"]
+        self.assertEqual("Waiting for an execution worker.", stored["current_activity"])
+        self.assertEqual("queued", stored["work_events"][0]["type"])
         item = self.table.put_item.call_args.kwargs["Item"]
         self.assertEqual("QUEUED", item["status"])
         self.assertEqual("general_aws", item["task_type"])

@@ -260,12 +260,19 @@
           throw error;
         }
       }
+      function eventTime(value) { try { return new Date(value).toLocaleTimeString(); } catch (_) { return value||''; } }
+      function workEvents(job) {
+        const events=Array.isArray(job.work_events)?job.work_events:[]; if(!events.length)return '';
+        const rows=events.map((event)=>{const type=String(event.type||'activity');const exit=Number.isInteger(event.exit_code)?`exit ${event.exit_code}`:'';return `<div class="event ${escapeHtml(type)}"><span class="event-time">${escapeHtml(eventTime(event.at))}</span><span>${escapeHtml(event.message||type)}</span><span class="event-exit">${escapeHtml(exit)}</span></div>`;}).join('');
+        return `<details class="work-events" open><summary>Live work events · ${events.length}</summary>${rows}</details>`;
+      }
       function jobCard(job) {
         const status=escapeHtml(job.status||'UNKNOWN'); const endpoint=typeof job.endpoint==='string'&&/^https?:\/\//.test(job.endpoint)?job.endpoint:'';
         const failure=job.failure&&(job.failure.message||JSON.stringify(job.failure));
         const summary=job.summary?`<div class="job-idea">${escapeHtml(job.summary)}</div>`:'';
         const resources=Array.isArray(job.resources)&&job.resources.length?`<div class="facts">resources: ${job.resources.map(escapeHtml).join(' · ')}</div>`:'';
-        return `<article class="job"><div class="job-top"><strong>${escapeHtml(job.job_id)}</strong><span class="status ${status.toLowerCase()}">${status}</span></div><div class="job-idea">${escapeHtml(job.idea)}</div>${summary}<div class="facts">stage: ${escapeHtml(job.stage||'queued')} · updated: ${escapeHtml(job.updated_at||job.created_at)}</div>${resources}${failure?`<div class="failure">${escapeHtml(failure)}</div>`:''}<div class="actions">${endpoint?`<a href="${escapeHtml(endpoint)}" target="_blank" rel="noopener">Open deployment</a>`:''}<button type="button" data-copy="${escapeHtml(job.job_id)}">Copy job ID</button>${job.evidence_uri?`<button type="button" data-copy="${escapeHtml(job.evidence_uri)}">Copy evidence URI</button>`:''}</div></article>`;
+        const activity=job.current_activity?`<div class="activity"><strong>Current activity:</strong> ${escapeHtml(job.current_activity)}</div>`:'';
+        return `<article class="job"><div class="job-top"><strong>${escapeHtml(job.job_id)}</strong><span class="status ${status.toLowerCase()}">${status}</span></div><div class="job-idea">${escapeHtml(job.idea)}</div>${summary}<div class="facts">stage: ${escapeHtml(job.stage||'queued')} · updated: ${escapeHtml(job.updated_at||job.created_at)}</div>${activity}${resources}${failure?`<div class="failure">${escapeHtml(failure)}</div>`:''}${workEvents(job)}<div class="actions">${endpoint?`<a href="${escapeHtml(endpoint)}" target="_blank" rel="noopener">Open deployment</a>`:''}<button type="button" data-copy="${escapeHtml(job.job_id)}">Copy job ID</button>${job.evidence_uri?`<button type="button" data-copy="${escapeHtml(job.evidence_uri)}">Copy evidence URI</button>`:''}</div></article>`;
       }
       async function refreshJobs() {
         if ($('dashboardView').hidden) return;

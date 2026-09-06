@@ -37,6 +37,9 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("async function uploadFile(file)", result["body"])
         self.assertIn("$('messageError').textContent='';", result["body"])
         self.assertIn("https://*.amazonaws.com", result["headers"]["content-security-policy"])
+        self.assertIn("Current activity:", result["body"])
+        self.assertIn("Live work events", result["body"])
+        self.assertIn("event.exit_code", result["body"])
 
     def test_non_root_path_is_not_found(self):
         result = dashboard.handler({"rawPath": "/missing"}, None)
