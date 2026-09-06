@@ -586,3 +586,12 @@ Copy this block and use the next identifier:
 - Acceptance evidence:
   -
 ```
+
+#### IGOR-018 second live defect record — 2026-09-06
+
+- Status: `IN PROGRESS` (not `RELEASED`).
+- Failed live test: a real inbound call immediately before this record received the carrier announcement “This person is not accepting calls at this time”; no Igor greeting or PIN prompt was heard. This record intentionally retains no caller identity, PIN, allowlist entry, credential, or secret value.
+- First diagnostic result: the voice-adapter Lambda did receive and complete a non-error invocation in the latest test window. The failure was therefore after Chime selected the SIP rule, not in Lex or conversational code; neither Lex nor conversation code was changed.
+- Cause: the adapter returned Chime actions without the mandatory SIP media application `SchemaVersion: "1.0"` envelope. Its `ReceiveDigits` action also used an unsupported `TerminatorDigits` parameter rather than expressing the terminator in `InputDigitsRegex`. Chime could invoke Lambda but could not accept the action response, so no greeting was rendered.
+- Remediation pending deployment: return the required schema envelope for every Chime response; collect exactly four DTMF digits followed by `#` using `^[0-9]{4}#$`, remove the unsupported parameter, and discard the terminator in memory before PIN comparison. No telephone number was ordered.
+- Routing evidence before remediation: the existing acquired dial-in number is assigned, inbound-capable, and associated with the enabled exact `ToPhoneNumber` SIP rule targeting the Igor SMA in `us-east-1`; the SMA endpoint is the active adapter Lambda. These resource and Lambda-invocation facts establish Chime reached the adapter, but do not by themselves establish an active carrier route or authorize a physical retest.

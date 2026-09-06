@@ -36,9 +36,12 @@ def _control_event(method:str,path:str,body:dict[str,Any])->dict[str,Any]: retur
 def _call_id(event:dict[str,Any])->str:
     details=event.get("CallDetails",{}); return details.get("TransactionId") or details.get("SessionId") or uuid.uuid4().hex
 def _digits(event:dict[str,Any])->str:
-    data=event.get("ActionData",{}); return str(data.get("ReceivedDigits") or data.get("Digits") or "")
+    data=event.get("ActionData",{}); return str(data.get("ReceivedDigits") or data.get("Digits") or "").rstrip("#")
+def _sma(actions:list[dict[str,Any]])->dict[str,Any]:
+    """Return the required Amazon Chime SDK SIP media application response envelope."""
+    return {"SchemaVersion":"1.0","Actions":actions}
 def _start_bot(call_id:str, conversation_id:str, bot_alias_arn:str)->dict[str,Any]:
-    return {"Actions":[{"Type":"StartBotConversation","Parameters":{"BotAliasArn":bot_alias_arn,"LocaleId":"en_US","SessionAttributes":{"call_id":call_id,"conversation_id":conversation_id}}}]}
+    return _sma([{"Type":"StartBotConversation","Parameters":{"BotAliasArn":bot_alias_arn,"LocaleId":"en_US","SessionAttributes":{"call_id":call_id,"conversation_id":conversation_id}}}])
 def chime(event:dict[str,Any], table:Any, secrets:Any, lam:Any, conversation_fn:str, bot_alias_arn:str, secret_name:str)->dict[str,Any]:
     call_id=_call_id(event); details=event.get("CallDetails",{}); action=event.get("ActionData",{})
     # The second SMA invocation is the DTMF result.  PIN text is examined only in memory.
@@ -47,9 +50,9 @@ def chime(event:dict[str,Any], table:Any, secrets:Any, lam:Any, conversation_fn:
         try: valid=call.get("authentication")=="PIN_REQUIRED" and _pin_ok(_secret(secrets,secret_name),_digits(event))
         except Exception: valid=False
         if not valid:
-            return {"Actions":[{"Type":"Speak","Parameters":{"Text":"Authentication failed. Goodbye."}},{"Type":"Hangup","Parameters":{}}]}
+            return _sma([{"Type":"Speak","Parameters":{"Text":"Authentication failed. Goodbye."}},{"Type":"Hangup","Parameters":{}}])
         if not bot_alias_arn.strip():
-            return {"Actions":[{"Type":"Speak","Parameters":{"Text":"Telephone service is not configured. Goodbye."}},{"Type":"Hangup","Parameters":{}}]}
+            return _sma([{"Type":"Speak","Parameters":{"Text":"Telephone service is not configured. Goodbye."}},{"Type":"Hangup","Parameters":{}}])
         created=_body(_invoke(lam,conversation_fn,{"requestContext":{"http":{"method":"POST"},"authorizer":{"jwt":{"claims":{"sub":"telephone"}}}},"rawPath":"/conversations","body":"{}"}))
         conversation_id=created["conversation_id"]
         _put_call(table,call_id,authentication="AUTHENTICATED",conversation_id=conversation_id,raw_audio_retained=False)
@@ -57,9 +60,9 @@ def chime(event:dict[str,Any], table:Any, secrets:Any, lam:Any, conversation_fn:
     caller=str((details.get("Participants") or [{}])[0].get("From",""))
     try: authorized=_allowed(_secret(secrets,secret_name),caller)
     except Exception: authorized=False
-    if not authorized: return {"Actions":[{"Type":"Speak","Parameters":{"Text":"This number is not authorized. Goodbye."}},{"Type":"Hangup","Parameters":{}}]}
+    if not authorized: return _sma([{"Type":"Speak","Parameters":{"Text":"This number is not authorized. Goodbye."}},{"Type":"Hangup","Parameters":{}}])
     _put_call(table,call_id,authentication="PIN_REQUIRED",caller_hash=safe_id(caller),raw_audio_retained=False)
-    return {"Actions":[{"Type":"Speak","Parameters":{"Text":"Welcome to Igor. Enter your PIN followed by pound."}},{"Type":"ReceiveDigits","Parameters":{"InputDigitsRegex":"^[0-9]{4}$","TimeoutInSeconds":15,"TerminatorDigits":"#"}}]}
+    return _sma([{"Type":"Speak","Parameters":{"Text":"Welcome to Igor. Enter your PIN followed by pound."}},{"Type":"ReceiveDigits","Parameters":{"InputDigitsRegex":"^[0-9]{4}#$","TimeoutInSeconds":15,"InBetweenDigitsTimeoutInMillis":5000}}])
 def lex_reply(event:dict[str,Any],text:str)->dict[str,Any]:
     state=event.get("sessionState",{}); intent=(state.get("intent") or {}).get("name","IgorRelayIntent")
     attrs=state.get("sessionAttributes") or {}

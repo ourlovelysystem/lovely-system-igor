@@ -21,11 +21,11 @@ class TelephoneTests(unittest.TestCase):
  def test_complete_chime_pin_lex_igor_audible_sequence(self):
   # inbound greeting and DTMF collection happen before Lex is ever started
   greeting=telephone.chime(self.call(),self.table,self.secret,self.lam,'conversation','arn:aws:lex:us-east-1:1:bot-alias/a/b','secret')
-  self.assertEqual(['Speak','ReceiveDigits'],[x['Type'] for x in greeting['Actions']])
-  self.assertIn('PIN',greeting['Actions'][0]['Parameters']['Text'])
+  self.assertEqual('1.0',greeting['SchemaVersion']); self.assertEqual(['Speak','ReceiveDigits'],[x['Type'] for x in greeting['Actions']])
+  self.assertIn('PIN',greeting['Actions'][0]['Parameters']['Text']); self.assertEqual('^[0-9]{4}#$',greeting['Actions'][1]['Parameters']['InputDigitsRegex']); self.assertNotIn('TerminatorDigits',greeting['Actions'][1]['Parameters'])
   self.table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED'}}
   self.reply({'conversation_id':'conv'})
-  handoff=telephone.chime(self.call('2468'),self.table,self.secret,self.lam,'conversation','arn:aws:lex:us-east-1:1:bot-alias/a/b','secret')
+  handoff=telephone.chime(self.call('2468#'),self.table,self.secret,self.lam,'conversation','arn:aws:lex:us-east-1:1:bot-alias/a/b','secret')
   start=handoff['Actions'][0]; self.assertEqual('StartBotConversation',start['Type']); self.assertRegex(start['Parameters']['BotAliasArn'],r'^arn:aws:lex:[^:]+:\d+:bot-alias/[^/]+/[^/]+$')
   self.assertEqual('en_US',start['Parameters']['LocaleId']); self.assertEqual('c',start['Parameters']['SessionAttributes']['call_id'])
   self.table.get_item.return_value={'Item':{'authentication':'AUTHENTICATED','conversation_id':'conv'}}
@@ -45,8 +45,8 @@ class TelephoneTests(unittest.TestCase):
   out=telephone.lex(self.lex_event('no'),self.table,self.lam,'conversation','control'); self.assertIn('No job',out['messages'][0]['content']); self.lam.invoke.assert_not_called()
  def test_invalid_pin_does_not_start_lex_or_persist_pin(self):
   self.table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED'}}
-  out=telephone.chime(self.call('0000'),self.table,self.secret,self.lam,'conversation','arn:aws:lex:us-east-1:1:bot-alias/a/b','secret')
-  self.assertEqual(['Speak','Hangup'],[x['Type'] for x in out['Actions']]); self.lam.invoke.assert_not_called(); self.assertNotIn('0000',str(self.table.mock_calls))
+  out=telephone.chime(self.call('0000#'),self.table,self.secret,self.lam,'conversation','arn:aws:lex:us-east-1:1:bot-alias/a/b','secret')
+  self.assertEqual('1.0',out['SchemaVersion']); self.assertEqual(['Speak','Hangup'],[x['Type'] for x in out['Actions']]); self.lam.invoke.assert_not_called(); self.assertNotIn('0000',str(self.table.mock_calls))
  def test_confirmation_is_exactly_one_control_job(self):
   self.table.get_item.return_value={'Item':{'authentication':'AUTHENTICATED','conversation_id':'conv','pending_command':'create marker','confirmation':'PENDING'}}; self.reply({'job_id':'job'})
   out=telephone.lex(self.lex_event('confirm'),self.table,self.lam,'conversation','control')
