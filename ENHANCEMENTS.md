@@ -26,7 +26,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 | Upload experience v2 | Faster, inspectable uploads that survive conversation navigation safely | IGOR-001, IGOR-002, IGOR-003, IGOR-004, IGOR-005 | PROPOSED | — |
 | Multimodal conversations v1 | Understand the operator's screenshots, images, PDFs, and uploaded files | IGOR-006 | RELEASED | `f6b26240103826f9392b14ef02c4a576df208b44` |
 | Live directed work v1 | Make coding and infrastructure work inspectable, steerable, and recoverable across jobs | IGOR-008, IGOR-011, IGOR-012, IGOR-013 | IN PROGRESS | Recorded in deployed stack SourceRevision |
-| Responsive execution v1 | Reduce visible latency and avoid unnecessary worker starts without sacrificing evidence | IGOR-014, IGOR-015, IGOR-016, IGOR-017 | IN PROGRESS | IGOR-014: `ce3561e649fa2851bf934f9927f491a52b8f74a5` |
+| Responsive execution v1 | Reduce visible latency and avoid unnecessary worker starts without sacrificing evidence | IGOR-014, IGOR-015, IGOR-016, IGOR-017 | IN PROGRESS | IGOR-014: `894525b6142fed748341da9216d8c92bb022707e` |
 | Connected capabilities v1 | Research the web, use authorized applications, and create reusable artifacts | IGOR-007, IGOR-009, IGOR-010 | PROPOSED | — |
 
 ## Enhancements
@@ -385,6 +385,25 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
     functional revision was published, deployed, and independently verified. It
     is deliberately not deployed merely to record its own deployment, preventing
     a self-referential deployment-record loop.
+  - Corrective release (2026-09-06, issue #4): the prior attachment-only
+    reuse condition was broadened to the documented request boundary. Published
+    revision `894525b6142fed748341da9216d8c92bb022707e` makes every later
+    `execute_task` in one operator request reuse the first durable job, including
+    text-only requests; it continues to send worker-routed attachments only once
+    and never forwards direct-model images. The full suite passed (110 Python
+    tests plus deployment-script regression).
+  - That exact functional revision was deployed in place to the existing `igor`
+    stack with its existing model, repository, and GitHub secret configuration
+    preserved. Independent CloudFormation readback returned `UPDATE_COMPLETE`
+    and SourceRevision `894525b6142fed748341da9216d8c92bb022707e`.
+  - Live deployed acceptance sent one text-only conversation request,
+    conversation `2480081a4fdc4b1b976f7e122a0ad8f4`, explicitly inducing two
+    `execute_task` calls. Both returned durable job
+    `9360949788b442f481ea541eeb13ed33`; the second result was marked
+    `reused_for_request=true`. An independent consistent DynamoDB scan filtered
+    by that conversation found exactly one durable worker record, with that same
+    job ID and CodeBuild ID
+    `WorkerProject-qSb9pRbvusry:3839c838-1b83-4a7d-985b-e9909b5ba6ef`.
 
 ### IGOR-015 — Stream conversational responses
 
