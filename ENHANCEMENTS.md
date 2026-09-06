@@ -26,6 +26,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 | Upload experience v2 | Faster, inspectable uploads that survive conversation navigation safely | IGOR-001, IGOR-002, IGOR-003, IGOR-004, IGOR-005 | PROPOSED | — |
 | Multimodal conversations v1 | Understand the operator's screenshots, images, PDFs, and uploaded files | IGOR-006 | IN PROGRESS | — |
 | Live directed work v1 | Make coding and infrastructure work inspectable, steerable, and recoverable across jobs | IGOR-008, IGOR-011, IGOR-012, IGOR-013 | IN PROGRESS | Recorded in deployed stack SourceRevision |
+| Responsive execution v1 | Reduce visible latency and avoid unnecessary worker starts without sacrificing evidence | IGOR-014, IGOR-015, IGOR-016, IGOR-017 | READY | — |
 | Connected capabilities v1 | Research the web, use authorized applications, and create reusable artifacts | IGOR-007, IGOR-009, IGOR-010 | PROPOSED | — |
 
 ## Enhancements
@@ -297,6 +298,91 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
   The disposable-job regression additionally covers safe workspace archival, binary patch,
   bounded Git bundle, ignored-secret exclusion, and `.env` exclusion. The final stack
   SourceRevision is independently read back after publication.
+
+
+### IGOR-014 — One worker job per directed request
+
+- Status: `READY`
+- Candidate release: Responsive execution v1
+- Observed problem: A single conversation request containing several
+  worker-routed files can create a separate CodeBuild job for each file. Each job
+  incurs its own queue delay, worker startup, workspace initialization, and
+  evidence lifecycle.
+- Intended outcome: One operator message creates at most one execution-worker
+  job containing the complete request and every attachment assigned to the
+  worker.
+- Acceptance evidence:
+  - A live request containing at least five worker-routed files creates exactly
+    one worker job.
+  - The job reports an individual inspection result for every attached file.
+  - One unsupported or corrupt file does not erase successful results for the
+    other files.
+  - Files remain associated with the originating conversation and request.
+  - The terminal evidence maps every attachment to its result.
+
+### IGOR-015 — Stream conversational responses
+
+- Status: `READY`
+- Candidate release: Responsive execution v1
+- Observed problem: The dashboard waits for the complete Bedrock response before
+  displaying any assistant text, so useful output remains invisible while the
+  model is generating it.
+- Intended outcome: Display ordered response content as Bedrock produces it,
+  while preserving one authoritative completed message in conversation history.
+- Acceptance evidence:
+  - A controlled long response displays its first content before model
+    completion.
+  - Streamed fragments are ordered and assemble into the exact durable assistant
+    message.
+  - Tool requests and execution-worker handoffs remain valid during streaming.
+  - Interrupted or failed streams are identified plainly and never appear as
+    complete answers.
+  - Reopening the conversation displays the authoritative assembled response
+    without duplicated fragments.
+
+### IGOR-016 — Fast path for bounded work
+
+- Status: `READY`
+- Candidate release: Responsive execution v1
+- Observed problem: Small, bounded inspections pay the same CodeBuild
+  provisioning cost as repository modification and infrastructure deployment.
+  The observed worker startup delay alone was approximately 28 seconds.
+- Intended outcome: Execute explicitly bounded, non-mutating inspections through
+  lower-startup compute while retaining the full CodeBuild worker for coding,
+  deployment, and other unrestricted work.
+- Acceptance evidence:
+  - The eligible task classes and their permission boundary are explicit and
+    testable.
+  - A controlled sample of at least 20 eligible tasks records submission,
+    acceptance, first-action, and completion latency; median time to first action
+    is below 5 seconds and p95 is below 10 seconds.
+  - Coding, publication, deployment, arbitrary shell work, and tasks exceeding
+    the bound always use the full execution worker.
+  - Fast-path work produces the same durable events, evidence location, and
+    honest terminal-status rules as full-worker work.
+  - Classification uncertainty falls back to the full worker rather than
+    expanding fast-path authority.
+
+### IGOR-017 — Worker latency and capacity telemetry
+
+- Status: `READY`
+- Candidate release: Responsive execution v1
+- Observed problem: Igor exposes timestamps but does not summarize queue delay,
+  worker startup, execution duration, concurrency pressure, or which phase
+  caused a slow job.
+- Intended outcome: Make worker performance measurable before purchasing larger
+  compute, reserved capacity, or quota increases.
+- Acceptance evidence:
+  - Every worker job records queue time, provisioning/startup time, time to first
+    action, active execution time, and total duration.
+  - The dashboard distinguishes queued, provisioning, running, and terminal
+    phases and shows their elapsed times.
+  - A multi-job live test records maximum simultaneous workers and identifies
+    account or project concurrency throttling plainly.
+  - Performance summaries contain no prompt contents, file contents,
+    credentials, or secret values.
+  - A release decision records whether measurements justify larger compute,
+    increased concurrency, reserved capacity, or no capacity change.
 
 ## Adding an enhancement
 
