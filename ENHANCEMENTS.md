@@ -28,6 +28,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 | Live directed work v1 | Make coding and infrastructure work inspectable, steerable, and recoverable across jobs | IGOR-008, IGOR-011, IGOR-012, IGOR-013 | IN PROGRESS | Recorded in deployed stack SourceRevision |
 | Responsive execution v1 | Reduce visible latency and avoid unnecessary worker starts without sacrificing evidence | IGOR-014, IGOR-015, IGOR-016, IGOR-017 | IN PROGRESS | IGOR-014: `894525b6142fed748341da9216d8c92bb022707e` |
 | Connected capabilities v1 | Research the web, use authorized applications, and create reusable artifacts | IGOR-007, IGOR-009, IGOR-010 | PROPOSED | — |
+| Telephone interface v1 | Let the authenticated operator converse with and direct Igor by telephone | IGOR-018 | READY | — |
 
 ## Enhancements
 
@@ -468,6 +469,58 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
     credentials, or secret values.
   - A release decision records whether measurements justify larger compute,
     increased concurrency, reserved capacity, or no capacity change.
+
+
+### IGOR-018 — Telephone conversation and command interface
+
+- Status: `READY`
+- Candidate release: Telephone interface v1
+- Observed problem: Igor is available through the dashboard but has no telephone
+  interface. The operator cannot call Igor, ask spoken questions, hear answers,
+  issue commands, or check active work while away from the dashboard.
+- Intended outcome: Provide one inbound telephone number through which the
+  authenticated operator can hold a turn-based spoken conversation with the
+  existing Igor conversation engine. Questions use the normal conversation path;
+  commands use Igor's existing execution-worker and evidence path. The telephone
+  adapter must not create a separate assistant, command system, or job ledger.
+- Initial implementation boundary:
+  - Use Amazon Chime SDK PSTN Audio for the phone number, SIP rule, and call
+    control; use a voice adapter backed by Amazon Lex V2 and Lambda to exchange
+    recognized text and responses with Igor's existing conversation API.
+  - Accept inbound calls only. Do not add outbound calling or contact-center
+    features in this release.
+  - Authenticate with both an allowlisted caller number and a per-operator DTMF
+    PIN stored in AWS Secrets Manager. Caller ID alone is insufficient.
+  - Answer ordinary questions without confirmation. Before submitting any action
+    that can change AWS, GitHub, or another external system, read back the exact
+    intended action and require an explicit spoken or DTMF confirmation.
+  - Treat uncertain command transcription as an error requiring repetition; do
+    not guess and submit a worker job.
+  - Do not retain raw call audio by default. Retain the transcript, call ID,
+    conversation ID, command confirmation, worker job ID, and normal evidence
+    references.
+  - If the call ends after job submission, the job continues. Its state remains
+    available in the dashboard and through a later authenticated call.
+- Depends on: IGOR-014 for request-scoped job deduplication. IGOR-011 progress
+  events should be used when reporting active-job status by voice.
+- Acceptance evidence:
+  - A real telephone call to the provisioned number authenticates the operator
+    without exposing the PIN in logs, transcripts, events, or evidence.
+  - The operator asks a factual question and receives an audible answer from the
+    same Igor conversation history used by the dashboard.
+  - The operator issues a read-only AWS request and receives its grounded result.
+  - The operator issues one harmless mutating request; Igor reads the action back,
+    obtains explicit confirmation, and creates exactly one durable worker job.
+  - Refusing confirmation and providing an ambiguous or low-confidence command
+    each create no worker job and no external change.
+  - During and after a worker job, the operator can ask for status and hear
+    durable progress or terminal evidence rather than invented progress.
+  - Ending the call does not cancel submitted work; a later call and the dashboard
+    can retrieve the same conversation and job.
+  - The live test records call setup, authentication, speech-turn, Igor response,
+    command-confirmation, job-submission, and status-query timings.
+  - Raw call audio is not stored, and logs/evidence contain no PIN, credential,
+    secret value, or full sensitive prompt content.
 
 ## Adding an enhancement
 
