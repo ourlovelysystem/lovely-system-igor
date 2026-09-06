@@ -601,3 +601,95 @@ class GitRecoveryAcceptanceTests(unittest.TestCase):
             self._git(recovered, "push", "origin", "main")
             remote = self._git(recovered, "ls-remote", "origin", "refs/heads/main").split()[0]
             self.assertEqual(expected_revision, remote)
+
+
+    def test_pushed_head_at_upstream_uses_remote_commit_without_empty_bundle(self):
+        class MemoryS3:
+            def __init__(self): self.objects = {}
+            def put_object(self, **kwargs): self.objects[(kwargs["Bucket"], kwargs["Key"])] = kwargs["Body"]
+            def get_object(self, **kwargs): return {"Body": io.BytesIO(self.objects[(kwargs["Bucket"], kwargs["Key"])])}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            origin, seed, first, second = root / "origin.git", root / "seed", root / "first", root / "second"
+            subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True)
+            subprocess.run(["git", "init", str(seed)], check=True, capture_output=True)
+            self._git(seed, "config", "user.email", "test@example.invalid")
+            self._git(seed, "config", "user.name", "Test")
+            (seed / "tracked.txt").write_text("base\n")
+            self._git(seed, "add", ".")
+            self._git(seed, "commit", "-m", "base")
+            self._git(seed, "branch", "-M", "main")
+            self._git(seed, "remote", "add", "origin", str(origin))
+            self._git(seed, "push", "-u", "origin", "main")
+            subprocess.run(["git", "clone", str(origin), str(first / "repository")], check=True, capture_output=True)
+            repository = first / "repository"
+            self._git(repository, "config", "user.email", "test@example.invalid")
+            self._git(repository, "config", "user.name", "Test")
+            self._git(repository, "checkout", "main")
+            (repository / "tracked.txt").write_text("pushed\n")
+            self._git(repository, "commit", "-am", "pushed result")
+            self._git(repository, "push", "origin", "main")
+            expected_revision = self._git(repository, "rev-parse", "HEAD")
+
+            s3 = MemoryS3()
+            worker = runner.Worker(table=Mock(), bedrock=Mock(), s3=s3, cloudformation=Mock(),
+                evidence_bucket="evidence", execution_role_arn="role", cloudformation_role_arn="role")
+            workspace_uri = worker.put_workspace("pushedjob", str(first))
+            manifest = worker.put_recovery_artifacts("pushedjob", str(first), workspace_uri)
+            self.assertEqual("pushed", manifest["push_status"])
+            self.assertEqual("remote_commit", manifest["recovery_source"])
+            self.assertNotIn("bundle_uri", manifest)
+            self.assertNotIn(("evidence", "jobs/pushedjob/recovery/history.bundle"), s3.objects)
+
+            worker.table.get_item.return_value = {"Item": {"job_id": "pushedjob", "recovery_manifest_uri": manifest["manifest_uri"]}}
+            restored = worker.restore_recovery("pushedjob", str(second))
+            self.assertEqual(expected_revision, restored["restored_revision"])
+            self.assertEqual(expected_revision, self._git(second / "repository", "rev-parse", "HEAD"))
+
+    def test_pushed_commit_restores_safe_uncommitted_workspace_files_without_bundle(self):
+        class MemoryS3:
+            def __init__(self): self.objects = {}
+            def put_object(self, **kwargs): self.objects[(kwargs["Bucket"], kwargs["Key"])] = kwargs["Body"]
+            def get_object(self, **kwargs): return {"Body": io.BytesIO(self.objects[(kwargs["Bucket"], kwargs["Key"])])}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            origin, seed, first, second = root / "origin.git", root / "seed", root / "first", root / "second"
+            subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True)
+            subprocess.run(["git", "init", str(seed)], check=True, capture_output=True)
+            self._git(seed, "config", "user.email", "test@example.invalid")
+            self._git(seed, "config", "user.name", "Test")
+            (seed / ".gitignore").write_text("ignored.txt\n")
+            (seed / "tracked.txt").write_text("base\n")
+            self._git(seed, "add", ".")
+            self._git(seed, "commit", "-m", "base")
+            self._git(seed, "branch", "-M", "main")
+            self._git(seed, "remote", "add", "origin", str(origin))
+            self._git(seed, "push", "-u", "origin", "main")
+            subprocess.run(["git", "clone", str(origin), str(first / "repository")], check=True, capture_output=True)
+            repository = first / "repository"
+            self._git(repository, "config", "user.email", "test@example.invalid")
+            self._git(repository, "config", "user.name", "Test")
+            self._git(repository, "checkout", "main")
+            (repository / "tracked.txt").write_text("pushed\n")
+            self._git(repository, "commit", "-am", "pushed result")
+            self._git(repository, "push", "origin", "main")
+            expected_revision = self._git(repository, "rev-parse", "HEAD")
+            (repository / "safe-notes.txt").write_text("preserve this uncommitted file\n")
+            (repository / "ignored.txt").write_text("do not archive\n")
+            (repository / ".env").write_text("TOKEN=do-not-archive\n")
+
+            s3 = MemoryS3()
+            worker = runner.Worker(table=Mock(), bedrock=Mock(), s3=s3, cloudformation=Mock(),
+                evidence_bucket="evidence", execution_role_arn="role", cloudformation_role_arn="role")
+            workspace_uri = worker.put_workspace("safejob", str(first))
+            manifest = worker.put_recovery_artifacts("safejob", str(first), workspace_uri)
+            self.assertNotIn("bundle_uri", manifest)
+            worker.table.get_item.return_value = {"Item": {"job_id": "safejob", "recovery_manifest_uri": manifest["manifest_uri"]}}
+            restored = worker.restore_recovery("safejob", str(second))
+            recovered = second / "repository"
+            self.assertEqual(expected_revision, restored["restored_revision"])
+            self.assertEqual("preserve this uncommitted file\n", (recovered / "safe-notes.txt").read_text())
+            self.assertFalse((recovered / "ignored.txt").exists())
+            self.assertFalse((recovered / ".env").exists())

@@ -549,30 +549,46 @@ class Worker:
             base_revision = self._git_output(repository, "rev-parse", "HEAD^", check=False) or resulting_revision
         patch = (self._git_output(repository, "diff", "--binary", f"{base_revision}..{resulting_revision}") + "\n" +
                  self._git_output(repository, "diff", "--binary"))
-        bundle_path = Path(workspace) / ".igor-recovery.bundle"
-        recovery_ref = "refs/igor/recovery"
-        self._git_output(repository, "update-ref", recovery_ref, resulting_revision)
-        completed = subprocess.run(["git", "-C", str(repository), "bundle", "create", str(bundle_path),
-            recovery_ref, f"^{base_revision}"], capture_output=True, text=True, check=False)
-        self._git_output(repository, "update-ref", "-d", recovery_ref, check=False)
-        if completed.returncode:
-            raise RuntimeError(f"could not create recovery bundle: {completed.stderr.strip()}")
-        bundle = bundle_path.read_bytes()
-        bundle_path.unlink()
-        if len(bundle) > MAX_RECOVERY_ARTIFACT_BYTES:
-            raise ValueError("Git recovery bundle exceeds 25 MB")
+        # Determine this before creating a bundle: Git refuses to create an empty
+        # range when HEAD is already the branch tip on the remote.
         remote_tip = self._git_output(repository, "ls-remote", "origin", f"refs/heads/{branch}", check=False)
         pushed = bool(remote_tip and remote_tip.split()[0].lower() == resulting_revision.lower())
+        if remote_tip and not pushed:
+            # The branch may have advanced after this job pushed. Fetch only its
+            # advertised head and test whether the result remains reachable.
+            fetched_remote = subprocess.run(["git", "-C", str(repository), "fetch", "--quiet", "origin",
+                f"refs/heads/{branch}"], capture_output=True, text=True, check=False)
+            pushed = fetched_remote.returncode == 0 and subprocess.run(
+                ["git", "-C", str(repository), "merge-base", "--is-ancestor", resulting_revision, "FETCH_HEAD"],
+                capture_output=True, text=True, check=False).returncode == 0
         prefix = f"jobs/{job_id}/recovery"
         patch_key, bundle_key, manifest_key = f"{prefix}/changes.patch", f"{prefix}/history.bundle", f"{prefix}/manifest.json"
         manifest = {"version": 1, "repository_url": repository_url, "base_revision": base_revision,
             "resulting_revision": resulting_revision, "branch": branch, "push_status": "pushed" if pushed else "not_pushed",
+            "recovery_source": "remote_commit" if pushed else "bundle",
             "workspace_uri": workspace_uri, "patch_uri": f"s3://{self.evidence_bucket}/{patch_key}",
-            "bundle_uri": f"s3://{self.evidence_bucket}/{bundle_key}",
             "repository_path": repository.relative_to(workspace).as_posix(),
             "worktree_status": self._git_output(repository, "status", "--porcelain=v1")}
-        for key, body, content_type in ((patch_key, patch.encode(), "text/x-diff"), (bundle_key, bundle, "application/x-git-bundle"),
-                                        (manifest_key, json.dumps(manifest, sort_keys=True).encode(), "application/json")):
+        artifacts = [(patch_key, patch.encode(), "text/x-diff")]
+        if not pushed:
+            bundle_path = Path(workspace) / ".igor-recovery.bundle"
+            recovery_ref = "refs/igor/recovery"
+            self._git_output(repository, "update-ref", recovery_ref, resulting_revision)
+            try:
+                completed = subprocess.run(["git", "-C", str(repository), "bundle", "create", str(bundle_path),
+                    recovery_ref, f"^{base_revision}"], capture_output=True, text=True, check=False)
+            finally:
+                self._git_output(repository, "update-ref", "-d", recovery_ref, check=False)
+            if completed.returncode:
+                raise RuntimeError(f"could not create recovery bundle: {completed.stderr.strip()}")
+            bundle = bundle_path.read_bytes()
+            bundle_path.unlink()
+            if len(bundle) > MAX_RECOVERY_ARTIFACT_BYTES:
+                raise ValueError("Git recovery bundle exceeds 25 MB")
+            manifest["bundle_uri"] = f"s3://{self.evidence_bucket}/{bundle_key}"
+            artifacts.append((bundle_key, bundle, "application/x-git-bundle"))
+        artifacts.append((manifest_key, json.dumps(manifest, sort_keys=True).encode(), "application/json"))
+        for key, body, content_type in artifacts:
             self.s3.put_object(Bucket=self.evidence_bucket, Key=key, Body=body, ContentType=content_type,
                 ServerSideEncryption="AES256")
         manifest["manifest_uri"] = f"s3://{self.evidence_bucket}/{manifest_key}"
@@ -588,7 +604,7 @@ class Worker:
                 raise ValueError("recovery artifact is outside Igor's evidence bucket")
             return self.s3.get_object(Bucket=bucket, Key=key)["Body"].read()
         manifest = json.loads(get_uri(source["recovery_manifest_uri"]))
-        required = {"repository_url", "base_revision", "resulting_revision", "branch", "workspace_uri", "bundle_uri"}
+        required = {"repository_url", "base_revision", "resulting_revision", "branch", "workspace_uri"}
         if not required <= set(manifest) or not re.fullmatch(r"[0-9a-f]{40}", manifest["resulting_revision"], re.I):
             raise ValueError("recovery manifest is invalid")
         destination = Path(workspace) / manifest.get("repository_path", "repository")
@@ -596,12 +612,22 @@ class Worker:
         clone = subprocess.run(["git", "clone", manifest["repository_url"], str(destination)], capture_output=True, text=True, check=False)
         if clone.returncode:
             raise RuntimeError(f"could not clone recovery repository: {clone.stderr.strip()}")
-        bundle_file = Path(workspace) / ".restore.bundle"
-        bundle_file.write_bytes(get_uri(manifest["bundle_uri"]))
-        fetched = subprocess.run(["git", "-C", str(destination), "fetch", str(bundle_file), manifest["resulting_revision"]], capture_output=True, text=True, check=False)
-        bundle_file.unlink()
-        if fetched.returncode:
-            raise RuntimeError(f"could not restore Git bundle: {fetched.stderr.strip()}")
+        # A pushed result is already in the clone. Only download a bundle when the
+        # exact resulting object is absent (for example, an unpushed local commit).
+        has_revision = subprocess.run(["git", "-C", str(destination), "cat-file", "-e",
+            f"{manifest['resulting_revision']}^{{commit}}"], capture_output=True, text=True, check=False).returncode == 0
+        if not has_revision:
+            bundle_uri = manifest.get("bundle_uri")
+            if not bundle_uri:
+                raise ValueError("recovery bundle is required because the resulting revision is not on the remote")
+            bundle_file = Path(workspace) / ".restore.bundle"
+            try:
+                bundle_file.write_bytes(get_uri(bundle_uri))
+                fetched = subprocess.run(["git", "-C", str(destination), "fetch", str(bundle_file), manifest["resulting_revision"]], capture_output=True, text=True, check=False)
+            finally:
+                bundle_file.unlink(missing_ok=True)
+            if fetched.returncode:
+                raise RuntimeError(f"could not restore Git bundle: {fetched.stderr.strip()}")
         self._git_output(destination, "checkout", "-B", manifest["branch"], manifest["resulting_revision"])
         # Overlay the safe archived worktree for uncommitted, non-ignored files.
         with zipfile.ZipFile(io.BytesIO(get_uri(manifest["workspace_uri"]))) as archive:
