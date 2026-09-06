@@ -26,7 +26,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 | Upload experience v2 | Faster, inspectable uploads that survive conversation navigation safely | IGOR-001, IGOR-002, IGOR-003, IGOR-004, IGOR-005 | PROPOSED | — |
 | Multimodal conversations v1 | Understand the operator's screenshots, images, PDFs, and uploaded files | IGOR-006 | RELEASED | `f6b26240103826f9392b14ef02c4a576df208b44` |
 | Live directed work v1 | Make coding and infrastructure work inspectable, steerable, and recoverable across jobs | IGOR-008, IGOR-011, IGOR-012, IGOR-013 | IN PROGRESS | Recorded in deployed stack SourceRevision |
-| Responsive execution v1 | Reduce visible latency and avoid unnecessary worker starts without sacrificing evidence | IGOR-014, IGOR-015, IGOR-016, IGOR-017 | READY | — |
+| Responsive execution v1 | Reduce visible latency and avoid unnecessary worker starts without sacrificing evidence | IGOR-014, IGOR-015, IGOR-016, IGOR-017 | IN PROGRESS | IGOR-014: `ce3561e649fa2851bf934f9927f491a52b8f74a5` |
 | Connected capabilities v1 | Research the web, use authorized applications, and create reusable artifacts | IGOR-007, IGOR-009, IGOR-010 | PROPOSED | — |
 
 ## Enhancements
@@ -339,7 +339,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 
 ### IGOR-014 — One worker job per directed request
 
-- Status: `READY`
+- Status: `RELEASED`
 - Candidate release: Responsive execution v1
 - Observed problem: A single conversation request containing several
   worker-routed files can create a separate CodeBuild job for each file. Each job
@@ -356,6 +356,35 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
     other files.
   - Files remain associated with the originating conversation and request.
   - The terminal evidence maps every attachment to its result.
+
+- Release evidence (2026-09-06):
+  - Functional revision `ce3561e649fa2851bf934f9927f491a52b8f74a5` added
+    request-scoped worker-job reuse, passes only execution-worker-routed
+    attachments across the control boundary, and requires a complete
+    attachment-to-result map in terminal worker evidence. The complete suite
+    passed (93 tests plus deployment-script regression) before publication.
+  - That exact published `main` revision was deployed **in place** to the
+    existing `igor` stack. Independent CloudFormation readback found
+    `UPDATE_COMPLETE` and SourceRevision
+    `ce3561e649fa2851bf934f9927f491a52b8f74a5`; the remote `main` ref matched.
+  - Live authenticated dashboard-API request, conversation
+    `055534b02dad427db565244398dd4aab`, uploaded five worker-routed attachments
+    (`one.txt`, `two.csv`, `three.md`, `four.html`, and corrupt `broken.pdf`) in
+    one message. Exactly one job, `0e5f1a56a6a44de2aa7f4fdfcbd6bc09`, was created
+    for that conversation and retained all five attachments. It reached durable
+    `WORKING` / `stage=complete`; evidence is
+    `s3://igor-evidencebucket-kuuvbcaqekxt/jobs/0e5f1a56a6a44de2aa7f4fdfcbd6bc09/evidence.json`.
+  - The immutable terminal evidence maps all five attachment IDs to individual
+    results: the four text/structured files were inspected successfully with
+    line/row/element locations, while `broken.pdf` was separately recorded as
+    corrupt/truncated (invalid header, 41 bytes, no `%%EOF`, not encrypted).
+    The corrupt result did not erase the four successful results. A fresh DynamoDB
+    and S3 reread verified one related job, five job attachments, and five mapped
+    evidence results.
+  - This entry is an evidence-only documentation revision made after the
+    functional revision was published, deployed, and independently verified. It
+    is deliberately not deployed merely to record its own deployment, preventing
+    a self-referential deployment-record loop.
 
 ### IGOR-015 — Stream conversational responses
 
