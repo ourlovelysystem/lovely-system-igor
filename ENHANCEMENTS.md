@@ -255,11 +255,22 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
     tests and a local commit succeeded.
   - An automated test ends one job before push, restores its artifacts in a new
     workspace, and verifies identical file content and commit history.
-- Release evidence: The disposable-job end-to-end regression creates a binary-containing
-  commit without pushing it, archives the safe workspace, binary patch, bounded Git bundle,
-  and manifest, restores it in a fresh workspace by source job ID, verifies the exact SHA,
-  history, and file bytes, then publishes that recovered object. It also proves ignored
-  secrets and `.env` content are absent from all recovery artifacts. The deployed stack
+- Release evidence: Live acceptance completed on 2026-09-06 with source worker job
+  `9baee2ad80104779bef9b3654bd4f3ed` and separate recovery worker job
+  `f352e021f58e493aabdbd059b673b913` (`recovery_source_job_id` set to the source).
+  The source created commit `0431de04e03802f8548c3b45591c5da3e2a269ca`, retained the
+  valid `https://github.com/ourlovelysystem/lovely-system-igor.git` origin, and its one
+  ordinary push to the pre-existing temporary ref was rejected non-fast-forward. Its durable
+  evidence is `s3://igor-evidencebucket-kuuvbcaqekxt/jobs/9baee2ad80104779bef9b3654bd4f3ed/evidence.json`
+  and its recovery manifest is `s3://igor-evidencebucket-kuuvbcaqekxt/jobs/9baee2ad80104779bef9b3654bd4f3ed/recovery/manifest.json`.
+  The separate recovery worker restored the exact SHA, complete history, tracked text file,
+  and binary bytes `00 49 47 4f 52 ff 0a`; it published that unchanged object to
+  `igor-013-live-recovered-acceptance`, whose remote SHA was independently verified as
+  `0431de04e03802f8548c3b45591c5da3e2a269ca`. Its durable evidence is
+  `s3://igor-evidencebucket-kuuvbcaqekxt/jobs/f352e021f58e493aabdbd059b673b913/evidence.json`
+  and recovery manifest is `s3://igor-evidencebucket-kuuvbcaqekxt/jobs/f352e021f58e493aabdbd059b673b913/recovery/manifest.json`.
+  The disposable-job regression additionally covers safe workspace archival, binary patch,
+  bounded Git bundle, ignored-secret exclusion, and `.env` exclusion. The final stack
   SourceRevision is independently read back after publication.
 
 ## Adding an enhancement

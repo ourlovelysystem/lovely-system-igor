@@ -11,6 +11,7 @@ import io
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 import urllib.error
@@ -56,14 +57,50 @@ def safe_event_text(value: Any, limit: int = 500) -> str:
     return text[:limit]
 
 
+def _shell_commands(command: str) -> list[list[str]]:
+    """Return shell command argv groups without treating arguments as commands."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    groups: list[list[str]] = [[]]
+    for token in tokens:
+        if token and set(token) <= {";", "&", "|"}:
+            if groups[-1]:
+                groups.append([])
+        else:
+            groups[-1].append(token)
+    return [group for group in groups if group]
+
+
 def command_activity(command: str, category: str) -> str:
-    """Classify an action without exposing its potentially sensitive command line."""
+    """Classify executed tools, never command arguments or inspected file names."""
     if category == "verify":
         return "verification"
-    if re.search(r"\bgit\b[^\n;&|]*\bpush\b|\b(?:publish|release)\b", command, re.I):
-        return "publication"
-    if re.search(r"\b(?:sam|cloudformation)\s+(?:deploy|create-stack|update-stack)\b|\bdeploy\b", command, re.I):
-        return "deployment"
+    for argv in _shell_commands(command):
+        while argv and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0]):
+            argv = argv[1:]
+        if argv[:1] == ["env"]:
+            argv = argv[1:]
+            while argv and (argv[0].startswith("-") or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0])):
+                argv = argv[1:]
+        if not argv:
+            continue
+        executable = argv[0].rsplit("/", 1)[-1]
+        if executable == "git" and "push" in argv[1:]:
+            return "publication"
+        if executable in {"npm", "twine"} and any(arg in {"publish", "upload"} for arg in argv[1:]):
+            return "publication"
+        if executable == "gh" and argv[1:3] == ["release", "create"]:
+            return "publication"
+        if executable in {"sam", "cloudformation"} and any(arg in {"deploy", "create-stack", "update-stack"} for arg in argv[1:]):
+            return "deployment"
+        if executable == "aws" and argv[1:3] == ["cloudformation", "deploy"]:
+            return "deployment"
+        if executable == "deploy.sh":
+            return "deployment"
     return category
 
 GENERAL_TOOL_CONFIG = {

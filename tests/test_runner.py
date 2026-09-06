@@ -429,6 +429,10 @@ class LiveWorkEventTests(unittest.TestCase):
         self.assertEqual("verification", runner.command_activity("python -m unittest", "verify"))
         self.assertEqual("publication", runner.command_activity("git push origin main", "change"))
         self.assertEqual("deployment", runner.command_activity("sam deploy", "change"))
+        self.assertEqual("change", runner.command_activity("cat scripts/deploy.sh", "change"))
+        self.assertEqual("change", runner.command_activity("printf 'git push' >> ENHANCEMENTS.md", "change"))
+        self.assertEqual("publication", runner.command_activity("cd repo && git push origin main", "change"))
+        self.assertEqual("deployment", runner.command_activity("./scripts/deploy.sh", "change"))
 
     def test_record_event_persists_safe_completed_event_with_exit_status(self):
         table = Mock()
