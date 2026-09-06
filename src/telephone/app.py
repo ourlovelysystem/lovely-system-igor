@@ -33,18 +33,57 @@ def _conversation_event(conversation_id:str,text:str)->dict[str,Any]:
 def _control_event(method:str,path:str,body:dict[str,Any])->dict[str,Any]: return {"requestContext":{"http":{"method":method}},"rawPath":path,"body":json.dumps(body)}
 def _call_id(event:dict[str,Any])->str:
     details=event.get("CallDetails",{}); return details.get("TransactionId") or details.get("SessionId") or uuid.uuid4().hex
+def _leg_a_call_id(event: dict[str, Any]) -> str:
+    """Return the inbound LEG-A CallId required by PSTN audio actions."""
+    for participant in (event.get("CallDetails", {}) or {}).get("Participants", []) or []:
+        if participant.get("ParticipantTag") == "LEG-A" and isinstance(participant.get("CallId"), str):
+            return participant["CallId"]
+    parameters = ((event.get("ActionData") or {}).get("Parameters") or {})
+    if isinstance(parameters.get("CallId"), str):
+        return parameters["CallId"]
+    raise ValueError("Chime event has no inbound LEG-A CallId")
 def _digits(event:dict[str,Any])->str:
     data=event.get("ActionData",{}); return str(data.get("ReceivedDigits") or data.get("Digits") or "").rstrip("#")
+
+# Contract copied structurally from the documented Amazon Chime SDK PSTN Audio
+# action definitions.  Keep this small allow-list next to construction so tests
+# reject a tempting but unsupported action/parameter before deployment.
+_ACTION_CONTRACTS = {
+    "SpeakAndGetDigits": {"CallId": str, "SpeechParameters": dict, "InputDigitsRegex": str,
+                            "TerminatorDigits": list, "TimeoutInSeconds": int,
+                            "InBetweenDigitsTimeoutInMillis": int},
+    "Speak": {"CallId": str, "SpeechParameters": dict},
+    "Hangup": {"CallId": str},
+    "StartBotConversation": {"BotAliasArn": str, "LocaleId": str, "SessionAttributes": dict},
+}
+def _validate_action(action: dict[str, Any]) -> None:
+    if set(action) != {"Type", "Parameters"} or action.get("Type") not in _ACTION_CONTRACTS:
+        raise ValueError("unsupported Chime action")
+    parameters = action["Parameters"]
+    expected = _ACTION_CONTRACTS[action["Type"]]
+    if not isinstance(parameters, dict) or set(parameters) != set(expected):
+        raise ValueError("unsupported Chime action parameters")
+    if any(not isinstance(parameters[key], kind) or (kind is int and isinstance(parameters[key], bool)) for key, kind in expected.items()):
+        raise ValueError("incorrect Chime action parameter type")
+    if action["Type"] in ("Speak", "SpeakAndGetDigits"):
+        speech = parameters["SpeechParameters"]
+        if set(speech) != {"Text"} or not isinstance(speech["Text"], str):
+            raise ValueError("unsupported Chime speech parameters")
+    if action["Type"] == "SpeakAndGetDigits" and parameters["TerminatorDigits"] != ["#"]:
+        raise ValueError("unsupported Chime terminator")
 def _sma(actions:list[dict[str,Any]])->dict[str,Any]:
-    """Return the required Amazon Chime SDK SIP media application response envelope."""
+    """Return a validated Amazon Chime SDK SIP media application response."""
+    for action in actions: _validate_action(action)
     return {"SchemaVersion":"1.0","Actions":actions}
 def _start_bot(call_id:str, conversation_id:str, bot_alias_arn:str)->dict[str,Any]:
     return _sma([{"Type":"StartBotConversation","Parameters":{"BotAliasArn":bot_alias_arn,"LocaleId":"en_US","SessionAttributes":{"call_id":call_id,"conversation_id":conversation_id}}}])
-def _hangup(text: str) -> dict[str, Any]:
-    return _sma([{"Type":"Speak","Parameters":{"Text":text}},{"Type":"Hangup","Parameters":{}}])
-def _pin_prompt(retry: bool = False) -> dict[str, Any]:
+def _speak(call_id: str, text: str) -> dict[str, Any]:
+    return {"Type":"Speak", "Parameters":{"CallId":call_id,"SpeechParameters":{"Text":text}}}
+def _hangup(call_id: str, text: str) -> dict[str, Any]:
+    return _sma([_speak(call_id, text), {"Type":"Hangup","Parameters":{"CallId":call_id}}])
+def _pin_prompt(call_id: str, retry: bool = False) -> dict[str, Any]:
     text = "PIN was not accepted. Enter your PIN followed by pound." if retry else "Welcome to Igor. Enter your PIN followed by pound."
-    return _sma([{"Type":"Speak","Parameters":{"Text":text}},{"Type":"ReceiveDigits","Parameters":{"InputDigitsRegex":"^[0-9]{4}#$","TimeoutInSeconds":15,"InBetweenDigitsTimeoutInMillis":5000}}])
+    return _sma([{"Type":"SpeakAndGetDigits","Parameters":{"CallId":call_id,"SpeechParameters":{"Text":text},"InputDigitsRegex":"^[0-9]{1,32}#$","TerminatorDigits":["#"],"TimeoutInSeconds":15,"InBetweenDigitsTimeoutInMillis":5000}}])
 def _is_digit_result(event: dict[str, Any]) -> bool:
     data = event.get("ActionData") or {}
     return "ReceivedDigits" in data or "Digits" in data
@@ -52,42 +91,33 @@ def _attempts(call: dict[str, Any]) -> int:
     try: return max(0, int(call.get("pin_attempts", 0)))
     except (TypeError, ValueError): return 0
 def chime(event:dict[str,Any], table:Any, secrets:Any, lam:Any, conversation_fn:str, bot_alias_arn:str, secret_name:str)->dict[str,Any]:
-    """Handle every SMA event with a SchemaVersion 1.0 action envelope.
-
-    We deliberately never inspect, canonicalize, hash, persist, or log caller ID.
-    Only a runtime-only DTMF PIN can create an Igor conversation.
-    """
+    """Handle Chime actions without retaining caller identity or PIN material."""
     call_id = _call_id(event)
+    leg_a_call_id = _leg_a_call_id(event)
     event_type = event.get("InvocationEventType") or ("ACTION_SUCCESSFUL" if _is_digit_result(event) else "NEW_INBOUND_CALL")
     if event_type == "NEW_INBOUND_CALL":
         try: enabled = _allow_any_caller(_secret(secrets, secret_name))
         except Exception: enabled = False
-        if not enabled:
-            return _hangup("Telephone authentication is unavailable. Goodbye.")
+        if not enabled: return _hangup(leg_a_call_id, "Telephone authentication is unavailable. Goodbye.")
         _put_call(table, call_id, authentication="PIN_REQUIRED", pin_attempts=0, raw_audio_retained=False)
-        return _pin_prompt()
-    # Only a successful ReceiveDigits result may advance pre-authentication.
+        return _pin_prompt(leg_a_call_id)
     if event_type == "ACTION_SUCCESSFUL" and _is_digit_result(event):
         call = _call(table, call_id)
-        try:
-            valid = call.get("authentication") == "PIN_REQUIRED" and _pin_ok(_secret(secrets, secret_name), _digits(event))
-        except Exception:
-            valid = False
+        try: valid = call.get("authentication") == "PIN_REQUIRED" and _pin_ok(_secret(secrets, secret_name), _digits(event))
+        except Exception: valid = False
         if not valid:
             attempts = _attempts(call) + 1
-            if attempts >= MAX_PIN_ATTEMPTS:
-                return _hangup("Authentication failed. Goodbye.")
+            if attempts >= MAX_PIN_ATTEMPTS: return _hangup(leg_a_call_id, "Authentication failed. Goodbye.")
             _put_call(table, call_id, authentication="PIN_REQUIRED", pin_attempts=attempts, raw_audio_retained=False)
-            return _pin_prompt(retry=True)
-        if not bot_alias_arn.strip():
-            return _hangup("Telephone service is not configured. Goodbye.")
+            return _pin_prompt(leg_a_call_id, retry=True)
+        if not bot_alias_arn.strip(): return _hangup(leg_a_call_id, "Telephone service is not configured. Goodbye.")
         created = _body(_invoke(lam, conversation_fn, {"requestContext":{"http":{"method":"POST"},"authorizer":{"jwt":{"claims":{"sub":"telephone"}}}},"rawPath":"/conversations","body":"{}"}))
         conversation_id = created["conversation_id"]
         _put_call(table, call_id, authentication="AUTHENTICATED", conversation_id=conversation_id, raw_audio_retained=False)
         return _start_bot(call_id, conversation_id, bot_alias_arn)
-    # ACTION_FAILED (including DTMF timeout), HANGUP, and malformed/unexpected
-    # pre-auth events must still receive a valid SMA response and never access Lex.
-    return _hangup("Authentication failed. Goodbye.")
+    # ACTION_FAILED, INVALID_LAMBDA_RESPONSE, HANGUP, and unexpected pre-auth
+    # events never access Lex or conversation services.
+    return _hangup(leg_a_call_id, "Authentication failed. Goodbye.")
 def lex_reply(event:dict[str,Any],text:str)->dict[str,Any]:
     state=event.get("sessionState",{}); intent=(state.get("intent") or {}).get("name","IgorRelayIntent")
     attrs=state.get("sessionAttributes") or {}
@@ -122,5 +152,10 @@ def handler(event:dict[str,Any],context:Any)->dict[str,Any]:
     del context
     import boto3
     table=boto3.resource("dynamodb").Table(os.environ["TELEPHONE_CALLS_TABLE"]); sec=boto3.client("secretsmanager"); lam=boto3.client("lambda")
-    if "CallDetails" in event: return chime(event,table,sec,lam,os.environ["CONVERSATION_FUNCTION_NAME"],os.environ["LEX_BOT_ALIAS_ARN"],os.environ["TELEPHONE_AUTH_SECRET_NAME"])
+    if "CallDetails" in event:
+        # Error fields are Chime diagnostics; deliberately do not log ActionData,
+        # participants, caller identity, received digits, or secret material.
+        diagnostic = {key: event[key] for key in ("InvocationEventType", "ErrorType", "ErrorMessage") if key in event}
+        if diagnostic: print(json.dumps({"chime_diagnostic": diagnostic}))
+        return chime(event,table,sec,lam,os.environ["CONVERSATION_FUNCTION_NAME"],os.environ["LEX_BOT_ALIAS_ARN"],os.environ["TELEPHONE_AUTH_SECRET_NAME"])
     return lex(event,table,lam,os.environ["CONVERSATION_FUNCTION_NAME"],os.environ["CONTROL_FUNCTION_NAME"])
