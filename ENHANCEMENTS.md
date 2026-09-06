@@ -29,6 +29,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 | Responsive execution v1 | Reduce visible latency and avoid unnecessary worker starts without sacrificing evidence | IGOR-014, IGOR-015, IGOR-016, IGOR-017 | IN PROGRESS | IGOR-014: `894525b6142fed748341da9216d8c92bb022707e` |
 | Connected capabilities v1 | Research the web, use authorized applications, and create reusable artifacts | IGOR-007, IGOR-009, IGOR-010 | PROPOSED | — |
 | Telephone interface v1 | Let the authenticated operator converse with and direct Igor by telephone | IGOR-018 | IN PROGRESS | — |
+| Dashboard usability v1 | Make conversation content easier to extract and reuse | IGOR-019 | READY | — |
 
 ## Enhancements
 
@@ -572,6 +573,31 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
     discover that a mandatory component was omitted.
   - Readiness claims must cite evidence for every required transition; missing
     evidence blocks the claim.
+
+
+### IGOR-019 — Copy Igor response
+
+- Status: `READY`
+- Candidate release: Dashboard usability v1
+- Observed problem: Igor responses can contain long explanations, commands, job
+  IDs, evidence locations, commit identifiers, and links, but the dashboard has
+  no direct control for copying one response. The operator must select text
+  manually and can accidentally include surrounding interface content.
+- Intended outcome: Every Igor response has a compact Copy control that places
+  the complete response text on the clipboard for immediate reuse.
+- Acceptance evidence:
+  - Every completed Igor response displays a clearly identifiable Copy control.
+  - Activating it copies only that response, including commands, job IDs,
+    evidence locations, commit identifiers, and link destinations.
+  - Copied text preserves useful line breaks and fenced code while excluding
+    speaker labels, buttons, progress chrome, and neighboring messages.
+  - The control provides immediate `Copied` confirmation and returns to its
+    normal label without changing the response.
+  - The control works with pointer and keyboard input and exposes an accessible
+    name.
+  - Clipboard failure is reported plainly and does not claim success.
+  - Automated UI coverage verifies exact clipboard contents for plain text,
+    multiline text, code blocks, and links.
 
 ## Adding an enhancement
 
