@@ -25,7 +25,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 | --- | --- | --- | --- | --- |
 | Upload experience v2 | Faster, inspectable uploads that survive conversation navigation safely | IGOR-001, IGOR-002, IGOR-003, IGOR-004, IGOR-005 | PROPOSED | — |
 | Multimodal conversations v1 | Understand the operator's screenshots, images, PDFs, and uploaded files | IGOR-006 | IN PROGRESS | — |
-| Live directed work v1 | Make coding and infrastructure work inspectable and steerable while it runs | IGOR-008, IGOR-011, IGOR-012 | PROPOSED | — |
+| Live directed work v1 | Make coding and infrastructure work inspectable, steerable, and recoverable across jobs | IGOR-008, IGOR-011, IGOR-012, IGOR-013 | PROPOSED | — |
 | Connected capabilities v1 | Research the web, use authorized applications, and create reusable artifacts | IGOR-007, IGOR-009, IGOR-010 | PROPOSED | — |
 
 ## Enhancements
@@ -223,6 +223,32 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
   - Superseded work does not continue making changes after cancellation.
   - The terminal evidence distinguishes the original objective from later
     operator instructions.
+
+### IGOR-013 — Recoverable work across disposable jobs
+
+- Status: `READY`
+- Candidate release: Live directed work v1
+- Observed problem: Igor jobs use disposable workspaces. `workspace.zip`
+  preserves files but excludes `.git`, so an unpushed commit disappears when its
+  job ends. A later retry cannot recover that exact commit by SHA and must
+  reconstruct the changes manually.
+- Intended outcome: Every coding job preserves enough Git-native evidence for a
+  later job to restore the exact tested changes and commits automatically.
+- Acceptance evidence:
+  - A coding job archives the workspace, a binary-safe patch, a Git bundle, and
+    a manifest containing repository URL, base revision, resulting revision,
+    branch, and push status.
+  - Credentials, ignored secrets, and unrelated repository objects are absent
+    from recovery artifacts.
+  - A retry can identify a source job, restore its work into a fresh workspace,
+    and verify the restored tree without requiring the operator to locate S3
+    objects or explain Git recovery.
+  - If a commit was created, recovery preserves its exact commit object when
+    possible; otherwise Igor records why a replacement commit was necessary.
+  - An intended push that fails cannot produce `WORKING` merely because local
+    tests and a local commit succeeded.
+  - An automated test ends one job before push, restores its artifacts in a new
+    workspace, and verifies identical file content and commit history.
 
 ## Adding an enhancement
 
