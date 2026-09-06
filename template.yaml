@@ -429,6 +429,7 @@ Resources:
     Properties:
       CodeUri: src/telephone/
       Handler: app.handler
+      FunctionName: !Sub ${AWS::StackName}-voice-adapter
       Runtime: python3.12
       Architectures: [arm64]
       MemorySize: 256
@@ -438,9 +439,96 @@ Resources:
         Variables:
           TELEPHONE_CALLS_TABLE: !Ref TelephoneCallsTable
           TELEPHONE_AUTH_SECRET_NAME: !Ref TelephoneAuthSecretName
-          LEX_BOT_ALIAS_ARN: !Ref TelephoneLexBotAliasArn
+          LEX_BOT_ALIAS_ARN: !GetAtt IgorLexBotAlias.Arn
           CONVERSATION_FUNCTION_NAME: !Ref ConversationFunction
           CONTROL_FUNCTION_NAME: !Ref ControlFunction
+
+  LexBotRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lexv2.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeIgorTelephoneFulfillment
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-voice-adapter
+
+  IgorLexBot:
+    Type: AWS::Lex::Bot
+    Properties:
+      Name: !Sub ${AWS::StackName}-telephone-igor
+      Description: Telephone speech transport for the existing Igor conversation engine
+      RoleArn: !GetAtt LexBotRole.Arn
+      DataPrivacy: {ChildDirected: false}
+      IdleSessionTTLInSeconds: 300
+      AutoBuildBotLocales: true
+      BotLocales:
+        - LocaleId: en_US
+          NluConfidenceThreshold: 0.40
+          VoiceSettings: {VoiceId: Joanna}
+          Intents:
+            - Name: IgorRelayIntent
+              Description: Routes recognized telephone utterances to Igor without canned answers
+              SampleUtterances:
+                - Utterance: ask Igor {request}
+                - Utterance: Igor {request}
+                - Utterance: please {request}
+              Slots:
+                - Name: request
+                  SlotTypeName: AMAZON.AlphaNumeric
+                  ValueElicitationSetting: {SlotConstraint: Optional}
+              FulfillmentCodeHook: {Enabled: true}
+            - Name: FallbackIntent
+              ParentIntentSignature: AMAZON.FallbackIntent
+              Description: Routes uncategorized telephone utterances to Igor
+              FulfillmentCodeHook: {Enabled: true}
+
+  IgorLexBotVersion:
+    Type: AWS::Lex::BotVersion
+    Properties:
+      BotId: !Ref IgorLexBot
+      BotVersionLocaleSpecification:
+        - LocaleId: en_US
+          BotVersionLocaleDetails: {SourceBotVersion: DRAFT}
+
+  IgorLexBotAlias:
+    Type: AWS::Lex::BotAlias
+    Properties:
+      BotAliasName: active
+      BotId: !Ref IgorLexBot
+      BotVersion: !GetAtt IgorLexBotVersion.BotVersion
+      BotAliasLocaleSettings:
+        - LocaleId: en_US
+          BotAliasLocaleSetting:
+            Enabled: true
+            CodeHookSpecification:
+              LambdaCodeHook:
+                LambdaArn: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-voice-adapter"
+                CodeHookInterfaceVersion: "1.0"
+
+  ChimePstnVoiceAdapterPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref VoiceAdapterFunction
+      Principal: voiceconnector.chime.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  LexVoiceAdapterPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref VoiceAdapterFunction
+      Principal: lexv2.amazonaws.com
+      SourceArn: !GetAtt IgorLexBot.Arn
 
   ConversationRole:
     Type: AWS::IAM::Role
@@ -788,3 +876,8 @@ Outputs:
     Value: !Ref TelephoneCallsTable
   VoiceAdapterFunctionArn:
     Value: !GetAtt VoiceAdapterFunction.Arn
+  TelephoneLexBotAliasArn:
+    Description: Active Lex V2 alias used by the Chime PSTN voice adapter
+    Value: !GetAtt IgorLexBotAlias.Arn
+  TelephoneLexLocaleId:
+    Value: en_US
