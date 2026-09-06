@@ -131,6 +131,31 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
   - File-derived claims cite the filename and a useful location such as page,
     row range, sheet, or section when the format permits it.
 
+- Live matrix evidence (2026-09-06; deployed revision `f1173cc815f324dc18730603afce8776f3229bad`):
+  - Screenshot `screenshot.png`: **inspected successfully** by `conversation-model`;
+    response cited `screenshot.png` and read exact visible text `SCREENSHOT OK`
+    (live conversation `matrix3501acc5593c4c0ea1b3414cd5b2a459`).
+  - Common images: `photo.jpg` was **inspected successfully** by
+    `conversation-model` (`JPEG_OK`); `graphic.webp` was **inspected successfully**
+    by `conversation-model` (`WEBP_OK`); and `animation.gif` was **inspected
+    successfully** after the GIF89a regression correction by `conversation-model`
+    (`GIF_OK`, conversation `matrix7e0f7e5065d4424dac2d8abea2f8e4de`). Each live
+    response named the file and component. The initial GIF89a run was concretely
+    diagnosed as a bad signature-routing defect, fixed and retested.
+  - `report.pdf` (PDF; worker job `c5c8f8b5a40548129691c1ed93fcdb0c`),
+    `memo.md` (text document; `a414faa08da04fb497802ab645385c68`),
+    `inventory.csv` (structured data; `b41cab0429c646d389a92c0339f5ab8c`),
+    `page.html` (text document; `c27ac35ee8b54483aeac4fd2955d425d`), and
+    `large.png` (20,837,457 bytes, above the 3,500,000-byte direct-image limit;
+    `73690a7045e54860887ecc537460ae8f`) were live-uploaded to private S3 and
+    correctly routed to `execution-worker`. The live conversation responses named
+    the component and queued job IDs. At recording time those jobs remained
+    `QUEUED`; they have not produced a file inspection or a concrete unsupported
+    result. They therefore do **not** satisfy the matrix acceptance criterion.
+  - Matrix command evidence is retained in execution records `cmd-019`, `cmd-020`,
+    and `cmd-023`; attachment keys are private `attachments/live-matrix/...` S3
+    objects. This item remains IN PROGRESS and is not released.
+
 ### IGOR-007 — Web research with linked sources
 
 - Status: `READY`
