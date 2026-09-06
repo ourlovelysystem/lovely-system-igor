@@ -75,6 +75,26 @@ def _shell_commands(command: str) -> list[list[str]]:
     return [group for group in groups if group]
 
 
+def objective_requests_deployment(objective: str) -> bool:
+    """Return whether the objective explicitly asks Igor to deploy infrastructure.
+
+    References to an existing deployment (including a deploy.sh filename) are not
+    requests for a new deployment. Executed deployment commands are detected
+    separately by ``command_activity``.
+    """
+    without_negated_deploy = re.sub(
+        r"\b(?:do\s+not|don't|avoid|without)\s+deploy\b", "", objective, flags=re.IGNORECASE
+    )
+    if re.search(r"\bdeploy\b(?!\s*\.[A-Za-z0-9_]+)", without_negated_deploy, re.IGNORECASE):
+        return True
+    return bool(re.search(
+        r"\b(?:create|update)\b(?:\s+(?:the|a|an|existing|new))?\s+"
+        r"(?:infrastructure|stack(?:s)?|cloudformation|resources?|service|workload)\b",
+        objective,
+        re.IGNORECASE,
+    ))
+
+
 def command_activity(command: str, category: str) -> str:
     """Classify executed tools, never command arguments or inspected file names."""
     if category == "verify":
@@ -97,7 +117,9 @@ def command_activity(command: str, category: str) -> str:
             return "publication"
         if executable in {"sam", "cloudformation"} and any(arg in {"deploy", "create-stack", "update-stack"} for arg in argv[1:]):
             return "deployment"
-        if executable == "aws" and argv[1:3] == ["cloudformation", "deploy"]:
+        if executable == "aws" and argv[:2] == ["aws", "cloudformation"] and any(
+            arg in {"deploy", "create-stack", "update-stack"} for arg in argv[2:]
+        ):
             return "deployment"
         if executable == "deploy.sh":
             return "deployment"
@@ -906,17 +928,18 @@ evidence ran out. A model statement is never proof."""
                     for index, command in cited
                 ):
                     raise ValueError("WORKING requires cited verification after the last change")
-            delivery_commands = [
-                command
-                for command in commands
-                if re.search(
-                    r"\bgit\b[^\n;&|]*\bpush\b|\b(?:sam|cloudformation)\s+deploy\b",
-                    f"{command.get('command', '')} {command.get('purpose', '')}",
-                    re.IGNORECASE,
-                )
+            deployment_commands = [
+                command for command in commands
+                if command_activity(command.get("command", ""), command.get("category", "")) == "deployment"
             ]
-            if delivery_commands and delivery_commands[-1]["exit_code"] != 0:
-                raise ValueError("WORKING is forbidden when the final publication or deployment failed")
+            if any(command["exit_code"] != 0 for command in deployment_commands):
+                raise ValueError("WORKING is forbidden when a deployment command failed")
+            publication_commands = [
+                command for command in commands
+                if command_activity(command.get("command", ""), command.get("category", "")) == "publication"
+            ]
+            if publication_commands and publication_commands[-1]["exit_code"] != 0:
+                raise ValueError("WORKING is forbidden when the final publication failed")
             git_push_commands = [
                 command
                 for command in commands
@@ -935,11 +958,7 @@ evidence ran out. A model statement is never proof."""
             )
             if (publication_required or git_push_commands) and not published_revisions:
                 raise ValueError("WORKING requires independently verifiable published revisions")
-            deployment_required = bool(re.search(r"\b(deploy|deployed|deployment)\b", objective, re.IGNORECASE)) or bool(
-                re.search(r"\b(?:sam|cloudformation)\s+(?:deploy|create-stack|update-stack)\b", " ".join(
-                    f"{command.get('command', '')} {command.get('purpose', '')}" for command in commands
-                ), re.IGNORECASE)
-            )
+            deployment_required = objective_requests_deployment(objective) or bool(deployment_commands)
             if deployment_required and not deployment_claims:
                 raise ValueError("WORKING requires independently verifiable deployment claims")
         return finish

@@ -480,6 +480,65 @@ class DeliveryEvidenceRegressionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "final change command failed"):
             runner.Worker._validate_finish(self.finish(), self.commands(deploy_exit=1), "Deploy the published revision")
 
+    def test_deployment_requirement_distinguishes_requests_commands_and_references(self):
+        readback = {
+            "command_id": "cmd-verify", "command": "aws cloudformation describe-stacks",
+            "purpose": "Verify", "category": "verify", "exit_code": 0,
+        }
+        no_change_finish = {
+            "status": "WORKING", "summary": "Verified existing state.", "changes_made": False,
+            "evidence_command_ids": ["cmd-verify"], "resources": [], "public_endpoints": [],
+            "published_revisions": [], "deployment_claims": [], "limitations": [],
+        }
+        with self.assertRaisesRegex(ValueError, "deployment claims"):
+            runner.Worker._validate_finish(
+                {**no_change_finish, "published_revisions": [{
+                    "repository": self.REPOSITORY, "branch": "main", "commit": self.REVISION,
+                }]},
+                [readback],
+                "Deploy the published revision",
+            )
+
+        executed_deploy = [
+            {"command_id": "cmd-deploy", "command": "sam deploy", "purpose": "Apply stack",
+             "category": "change", "exit_code": 0},
+            readback,
+        ]
+        with self.assertRaisesRegex(ValueError, "deployment claims"):
+            runner.Worker._validate_finish(
+                {**no_change_finish, "changes_made": True}, executed_deploy, "Verify stack state"
+            )
+
+        for objective, commands in (
+            ("Verify the deployed correction", [readback]),
+            ("Inspect existing deployments", [readback]),
+            ("Read scripts/deploy.sh", [{
+                "command_id": "cmd-read", "command": "cat scripts/deploy.sh", "purpose": "Read script",
+                "category": "inspect", "exit_code": 0,
+            }]),
+        ):
+            with self.subTest(objective=objective):
+                finish = dict(no_change_finish)
+                finish["evidence_command_ids"] = [commands[0]["command_id"]]
+                self.assertEqual(finish, runner.Worker._validate_finish(finish, commands, objective))
+
+    def test_failed_deployment_command_prohibits_working_even_after_a_later_change(self):
+        commands = [
+            {"command_id": "cmd-deploy", "command": "sam deploy", "purpose": "Apply stack",
+             "category": "change", "exit_code": 1},
+            {"command_id": "cmd-recover", "command": "printf recovered", "purpose": "Record recovery",
+             "category": "change", "exit_code": 0},
+            {"command_id": "cmd-verify", "command": "test -f README.md", "purpose": "Verify",
+             "category": "verify", "exit_code": 0},
+        ]
+        finish = {
+            "status": "WORKING", "summary": "Recovered.", "changes_made": True,
+            "evidence_command_ids": ["cmd-verify"], "resources": [], "public_endpoints": [],
+            "published_revisions": [], "deployment_claims": [], "limitations": [],
+        }
+        with self.assertRaisesRegex(ValueError, "deployment command failed"):
+            runner.Worker._validate_finish(finish, commands, "Verify the deployed correction")
+
     def test_cloudformation_readback_requires_matching_source_revision(self):
         cloudformation = Mock()
         cloudformation.describe_stacks.return_value = {"Stacks": [{"Parameters": [
