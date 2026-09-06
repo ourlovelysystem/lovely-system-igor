@@ -30,6 +30,12 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("/part-url", result["body"])
         self.assertIn("uploadFile(file)", result["body"])
         self.assertIn("data-job-progress", result["body"])
+        self.assertIn("attachmentsByConversation", result["body"])
+        self.assertIn("data-cancel-upload", result["body"])
+        self.assertIn("MiB/s", result["body"])
+        self.assertIn("part-urls", result["body"])
+        self.assertIn("async function uploadFile(file)", result["body"])
+        self.assertIn("$('messageError').textContent='';", result["body"])
         self.assertIn("https://*.amazonaws.com", result["headers"]["content-security-policy"])
 
     def test_non_root_path_is_not_found(self):

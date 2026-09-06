@@ -58,10 +58,16 @@ password on first sign-in. Public account creation is disabled.
 
 The dashboard accepts images, PDFs, documents, and arbitrary files. Upload bytes
 go directly from the browser to Igor's private S3 bucket using multipart upload;
-they do not pass through Lambda or API Gateway. Four parts transfer concurrently,
-the dashboard shows byte progress, and abandoned multipart uploads expire after
-seven days. The implementation supports the S3 multipart ceiling of 10,000 parts
-at 5 GiB per part.
+they do not pass through Lambda or API Gateway. Files at or below 32 MiB use one
+presigned S3 PUT; larger files use adaptive multipart sizes (while preserving
+S3's 10,000-part ceiling) and receive presigned part URLs in bounded batches.
+Four parts transfer concurrently. Upload cards show Preparing, Uploading,
+Verifying, and Ready states with transferred bytes, rate, elapsed time, ETA, and
+an explicit cancel action. Upload cards belong to their originating conversation,
+so activity in another conversation never disables its Send button. Igor HEADs
+the completed S3 object before marking an attachment ready; cancelled multipart
+uploads are aborted and recorded as CANCELLED. Abandoned multipart uploads expire
+after seven days.
 
 Supported images and documents within the conversational model's direct-input
 threshold are loaded from private S3 and presented to Bedrock as bytes for the

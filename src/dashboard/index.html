@@ -148,7 +148,7 @@
       const config = window.IGOR_CONFIG;
       const terminal = new Set(['WORKING', 'FAILED', 'BLOCKED', 'INCOMPLETE']);
       const tokenKey = 'igor.idToken';
-      let challenge = null, timer = null, currentConversationId = null, conversationPromise = null, conversations = [], jobStates = new Map(), latestJobs = [], pendingAttachments = [], uploadsInFlight = 0, sending = false;
+      let challenge = null, timer = null, currentConversationId = null, conversationPromise = null, conversations = [], jobStates = new Map(), latestJobs = [], pendingAttachments = [], attachmentsByConversation = new Map(), sending = false;
       const $ = (id) => document.getElementById(id);
       const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[character]);
 
@@ -198,11 +198,13 @@
         $('messages').scrollTop=$('messages').scrollHeight;
       }
       async function selectConversation(id) {
-        currentConversationId=id; renderConversationList(); $('messageError').textContent='';
+        rememberAttachments(); currentConversationId=id; restoreAttachments(); renderConversationList(); $('messageError').textContent='';
         const body=await api(`/conversations/${id}`); $('chatTitle').textContent=body.conversation.title||'Conversation'; renderMessages(body.messages||[]); syncJobProgress(latestJobs);
       }
+      function rememberAttachments() { if(currentConversationId) attachmentsByConversation.set(currentConversationId,pendingAttachments); }
+      function restoreAttachments() { pendingAttachments=currentConversationId?(attachmentsByConversation.get(currentConversationId)||[]):[]; renderPendingAttachments(); updateSendState(); }
       function newConversation() {
-        currentConversationId=null; pendingAttachments=[]; renderPendingAttachments(); renderConversationList(); $('chatTitle').textContent='New conversation'; renderMessages([]); $('message').focus();
+        rememberAttachments(); currentConversationId=null; pendingAttachments=[]; renderPendingAttachments(); updateSendState(); renderConversationList(); $('chatTitle').textContent='New conversation'; renderMessages([]); $('message').focus();
       }
       function appendPending(role,text,tools=[],attachments=[]) {
         const welcome=$('messages').querySelector('.welcome'); if (welcome) welcome.remove();
@@ -213,26 +215,32 @@
       function formatBytes(value) {
         const size=Number(value)||0; if(size<1024)return `${size} B`; const units=['KiB','MiB','GiB','TiB']; let amount=size/1024,index=0; while(amount>=1024&&index<units.length-1){amount/=1024;index++;} return `${amount>=10?amount.toFixed(0):amount.toFixed(1)} ${units[index]}`;
       }
-      function updateSendState() { $('sendButton').disabled=sending||uploadsInFlight>0; }
+      function updateSendState() { $('sendButton').disabled=sending||pendingAttachments.some((file)=>file.status==='UPLOADING'); }
       function renderPendingAttachments() {
-        $('pendingAttachments').innerHTML=pendingAttachments.map((file)=>`<div class="attachment"><strong>${escapeHtml(file.filename)}</strong> · ${escapeHtml(formatBytes(file.size))}<div>${escapeHtml(file.label||file.status)}</div>${file.status==='UPLOADING'?`<div class="upload-bar"><span style="width:${Math.max(0,Math.min(100,file.progress||0))}%"></span></div>`:''}</div>`).join('');
+        $('pendingAttachments').innerHTML=pendingAttachments.map((file,index)=>`<div class="attachment"><strong>${escapeHtml(file.filename)}</strong> · ${escapeHtml(formatBytes(file.size))}<div>${escapeHtml(file.label||file.status)}</div>${file.status==='UPLOADING'?`<div class="upload-bar"><span style="width:${Math.max(0,Math.min(100,file.progress||0))}%"></span></div><small>${escapeHtml(formatBytes(file.transferred||0))}/${escapeHtml(formatBytes(file.size))} · ${escapeHtml(file.rate||'calculating…')} · ${escapeHtml(file.elapsed||'0s')} elapsed · ${escapeHtml(file.eta||'ETA calculating…')}</small><button type="button" data-cancel-upload="${index}">Cancel</button>`:''}</div>`).join('');
       }
       async function ensureConversation() {
         if(currentConversationId)return currentConversationId; if(!conversationPromise)conversationPromise=api('/conversations',{method:'POST',body:'{}'}); try{const created=await conversationPromise;currentConversationId=created.conversation_id;return currentConversationId;}finally{conversationPromise=null;}
       }
-      function putPart(url,blob,onProgress) {
-        return new Promise((resolve,reject)=>{const request=new XMLHttpRequest();request.open('PUT',url);request.upload.onprogress=(event)=>{if(event.lengthComputable)onProgress(event.loaded);};request.onerror=()=>reject(new Error('S3 upload connection failed'));request.onload=()=>{if(request.status<200||request.status>=300){reject(new Error(`S3 rejected an upload part (${request.status})`));return;}const etag=request.getResponseHeader('ETag');if(!etag){reject(new Error('S3 did not return an upload ETag'));return;}resolve(etag);};request.send(blob);});
+      function putPart(url,blob,onProgress,requests) {
+        return new Promise((resolve,reject)=>{const request=new XMLHttpRequest(); requests.push(request); request.open('PUT',url); request.upload.onprogress=(event)=>{if(event.lengthComputable)onProgress(event.loaded);}; request.onerror=()=>reject(new Error('S3 upload connection failed')); request.onabort=()=>reject(new Error('Upload cancelled')); request.onload=()=>{if(request.status<200||request.status>=300){reject(new Error(`S3 rejected an upload part (${request.status})`));return;}const etag=request.getResponseHeader('ETag');if(!etag){reject(new Error('S3 did not return an upload ETag'));return;}resolve(etag);}; request.send(blob);});
       }
+      function uploadMetrics(view,started,transferred) { const elapsed=Math.max(.001,(Date.now()-started)/1000), rate=transferred/elapsed, remaining=Math.max(0,view.size-transferred); view.transferred=transferred; view.rate=`${(rate/1024/1024).toFixed(rate>=10*1024*1024?0:1)} MiB/s`; view.elapsed=`${elapsed.toFixed(1)}s`; view.eta=rate?`ETA ${(remaining/rate).toFixed(1)}s`:'ETA calculating…'; view.progress=transferred/view.size*100; }
       async function uploadFile(file) {
-        const conversationId=await ensureConversation(); const view={filename:file.name,size:file.size,status:'UPLOADING',label:'Starting…',progress:0}; pendingAttachments.push(view); uploadsInFlight++; updateSendState(); renderPendingAttachments();
+        $('messageError').textContent='';
+        const conversationId=await ensureConversation(); const view={filename:file.name,size:file.size,status:'UPLOADING',label:'Preparing',progress:0,transferred:0}; pendingAttachments.push(view); rememberAttachments(); updateSendState(); renderPendingAttachments(); const requests=[]; view.cancel=()=>requests.forEach((request)=>request.abort()); const started=Date.now();
         try {
-          const initiated=await api(`/conversations/${conversationId}/attachments`,{method:'POST',body:JSON.stringify({filename:file.name,content_type:file.type||'application/octet-stream',size:file.size})}); view.attachment_id=initiated.attachment_id; const completed=new Array(initiated.part_count); const active=new Map(); let next=1,finishedBytes=0;
-          const redraw=()=>{let activeBytes=0;for(const value of active.values())activeBytes+=value;view.progress=((finishedBytes+activeBytes)/file.size)*100;view.label=`Uploading ${Math.min(100,Math.floor(view.progress))}%`;renderPendingAttachments();};
-          const worker=async()=>{while(true){const partNumber=next++;if(partNumber>initiated.part_count)return;const start=(partNumber-1)*initiated.part_size,end=Math.min(file.size,start+initiated.part_size);const signed=await api(`/conversations/${conversationId}/attachments/${initiated.attachment_id}/part-url`,{method:'POST',body:JSON.stringify({part_number:partNumber})});const etag=await putPart(signed.url,file.slice(start,end),(loaded)=>{active.set(partNumber,loaded);redraw();});active.delete(partNumber);finishedBytes+=end-start;completed[partNumber-1]={part_number:partNumber,etag};redraw();}};
-          await Promise.all(Array.from({length:Math.min(4,initiated.part_count)},()=>worker())); const ready=await api(`/conversations/${conversationId}/attachments/${initiated.attachment_id}/complete`,{method:'POST',body:JSON.stringify({parts:completed})}); Object.assign(view,ready,{status:'READY',label:'Ready',progress:100});
-        } catch(error) { view.status='FAILED'; view.label=error.message; $('messageError').textContent=`${file.name}: ${error.message}`; }
-        finally { uploadsInFlight--; updateSendState(); renderPendingAttachments(); }
+          const initiated=await api(`/conversations/${conversationId}/attachments`,{method:'POST',body:JSON.stringify({filename:file.name,content_type:file.type||'application/octet-stream',size:file.size})}); view.attachment_id=initiated.attachment_id; view.label='Uploading';
+          if(initiated.upload_mode==='direct') { await putPart(initiated.url,file,(loaded)=>{uploadMetrics(view,started,loaded);renderPendingAttachments();},requests); view.label='Verifying'; renderPendingAttachments(); const ready=await api(`/conversations/${conversationId}/attachments/${initiated.attachment_id}/complete`,{method:'POST',body:JSON.stringify({parts:[]})}); Object.assign(view,ready,{status:'READY',label:'Ready',progress:100,transferred:file.size}); }
+          else { const completed=new Array(initiated.part_count), active=new Map(), urls=new Map((initiated.part_urls||[]).map((part)=>[part.part_number,part.url])); let next=1,finishedBytes=0;
+            const signed=async(partNumber)=>{if(!urls.has(partNumber)){const batch=await api(`/conversations/${conversationId}/attachments/${initiated.attachment_id}/part-urls`,{method:'POST',body:JSON.stringify({first_part:partNumber})});for(const part of batch.part_urls)urls.set(part.part_number,part.url);}return urls.get(partNumber);};
+            const redraw=()=>{let activeBytes=0;for(const value of active.values())activeBytes+=value;uploadMetrics(view,started,finishedBytes+activeBytes);renderPendingAttachments();};
+            const worker=async()=>{while(true){const partNumber=next++;if(partNumber>initiated.part_count)return;const begin=(partNumber-1)*initiated.part_size,end=Math.min(file.size,begin+initiated.part_size);const etag=await putPart(await signed(partNumber),file.slice(begin,end),(loaded)=>{active.set(partNumber,loaded);redraw();},requests);active.delete(partNumber);finishedBytes+=end-begin;completed[partNumber-1]={part_number:partNumber,etag};redraw();}};
+            await Promise.all(Array.from({length:Math.min(4,initiated.part_count)},()=>worker())); view.label='Verifying'; renderPendingAttachments(); const ready=await api(`/conversations/${conversationId}/attachments/${initiated.attachment_id}/complete`,{method:'POST',body:JSON.stringify({parts:completed})}); Object.assign(view,ready,{status:'READY',label:'Ready',progress:100,transferred:file.size}); }
+        } catch(error) { if(view.status!=='CANCELLED'){view.status='FAILED';view.label=error.message;$('messageError').textContent=`${file.name}: ${error.message}`;} }
+        finally { rememberAttachments(); updateSendState(); renderPendingAttachments(); }
       }
+      async function cancelUpload(index) { const view=pendingAttachments[index]; if(!view||view.status!=='UPLOADING')return; view.cancel(); try {await api(`/conversations/${currentConversationId}/attachments/${view.attachment_id}`,{method:'DELETE'});view.status='CANCELLED';view.label='Cancelled';} catch(error) {$('messageError').textContent=error.message;} finally{rememberAttachments();updateSendState();renderPendingAttachments();} }
       function progressElement(jobId) { return Array.from(document.querySelectorAll('[data-job-progress]')).find((element)=>element.dataset.jobProgress===jobId); }
       function progressText(job) { const count=Number(job.command_count||0); return `${job.status} · ${job.progress_message||job.stage||'Working'}${count?` · ${count} command${count===1?'':'s'}`:''}`; }
       function syncJobProgress(jobs) {
@@ -267,11 +275,12 @@
 
       $('loginForm').addEventListener('submit',async(event)=>{ event.preventDefault(); $('loginButton').disabled=true; $('loginError').textContent=''; try { const email=$('email').value.trim(); const result=await cognito('InitiateAuth',{AuthFlow:'USER_PASSWORD_AUTH',ClientId:config.clientId,AuthParameters:{USERNAME:email,PASSWORD:$('password').value}}); if(result.ChallengeName==='NEW_PASSWORD_REQUIRED'){challenge={session:result.Session,username:result.ChallengeParameters.USER_ID_FOR_SRP||email};$('loginForm').hidden=true;$('newPasswordForm').hidden=false;$('newPassword').focus();}else useSession(result.AuthenticationResult); } catch(error){$('loginError').textContent=error.message;} finally{$('loginButton').disabled=false;} });
       $('newPasswordForm').addEventListener('submit',async(event)=>{ event.preventDefault(); $('loginError').textContent=''; try { const result=await cognito('RespondToAuthChallenge',{ChallengeName:'NEW_PASSWORD_REQUIRED',ClientId:config.clientId,Session:challenge.session,ChallengeResponses:{USERNAME:challenge.username,NEW_PASSWORD:$('newPassword').value}}); useSession(result.AuthenticationResult); } catch(error){$('loginError').textContent=error.message;} });
-      $('messageForm').addEventListener('submit',async(event)=>{ event.preventDefault(); const text=$('message').value.trim(); const attachments=pendingAttachments.filter((file)=>file.status==='READY'); if(!text&&!attachments.length)return; sending=true;updateSendState();$('messageError').textContent=''; try { await sendMessage(text,attachments); $('message').value=''; pendingAttachments=[];renderPendingAttachments();await refreshJobs(); } catch(error){$('messageError').textContent=error.message;} finally{sending=false;updateSendState();$('message').focus();} });
+      $('messageForm').addEventListener('submit',async(event)=>{ event.preventDefault(); const text=$('message').value.trim(); const attachments=pendingAttachments.filter((file)=>file.status==='READY'); if(!text&&!attachments.length)return; sending=true;updateSendState();$('messageError').textContent=''; try { await sendMessage(text,attachments); $('message').value=''; pendingAttachments=[];attachmentsByConversation.set(currentConversationId,pendingAttachments);renderPendingAttachments();await refreshJobs(); } catch(error){$('messageError').textContent=error.message;} finally{sending=false;updateSendState();$('message').focus();} });
       $('message').addEventListener('keydown',(event)=>{ if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$('messageForm').requestSubmit();} });
       $('attachButton').addEventListener('click',()=>$('fileInput').click());
       $('fileInput').addEventListener('change',()=>{const files=Array.from($('fileInput').files||[]);$('fileInput').value='';for(const file of files)uploadFile(file);});
       $('newConversation').addEventListener('click',newConversation);
+      $('pendingAttachments').addEventListener('click',(event)=>{const index=event.target.dataset&&event.target.dataset.cancelUpload;if(index!==undefined)cancelUpload(Number(index));});
       $('conversationList').addEventListener('click',(event)=>{const id=event.target.dataset&&event.target.dataset.conversation;if(id)selectConversation(id).catch((error)=>{$('messageError').textContent=error.message;});});
       $('jobs').addEventListener('click',async(event)=>{const value=event.target.dataset&&event.target.dataset.copy;if(!value)return;await navigator.clipboard.writeText(value);const previous=event.target.textContent;event.target.textContent='Copied';setTimeout(()=>{event.target.textContent=previous;},900);});
       $('logoutButton').addEventListener('click',()=>signOut());

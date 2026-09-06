@@ -313,3 +313,49 @@ class ConversationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class UploadEnhancementTests(ConversationTests):
+    def test_small_file_uses_one_direct_put_and_verifies_before_ready(self):
+        self.table.get_item.return_value = {"Item": {"conversation_id": "abc", "record_key": "META", "owner_id": "operator-1"}}
+        self.s3.generate_presigned_url.return_value = "https://s3.example/direct"
+        result = self.call("POST", "/conversations/abc/attachments", {"filename": "note.txt", "content_type": "text/plain", "size": 32 * 1024**2})
+        body = json.loads(result["body"])
+        self.assertEqual(201, result["statusCode"])
+        self.assertEqual("direct", body["upload_mode"])
+        self.assertEqual("put_object", self.s3.generate_presigned_url.call_args.args[0])
+        self.s3.create_multipart_upload.assert_not_called()
+        stored = self.table.put_item.call_args.kwargs["Item"]
+        self.assertIn("preparing_started_at", stored["phase_timings"])
+
+    def test_direct_completion_heads_object_without_multipart_completion(self):
+        metadata = {"conversation_id": "abc", "record_key": "META", "owner_id": "operator-1"}
+        attachment = {"conversation_id": "abc", "record_key": "ATTACH#file-1", "attachment_id": "file-1", "owner_id": "operator-1", "filename": "note.txt", "content_type": "text/plain", "size": 7, "s3_key": "attachments/x", "upload_mode": "direct", "status": "UPLOADING"}
+        self.table.get_item.side_effect = [{"Item": metadata}, {"Item": attachment}]
+        self.s3.head_object.return_value = {"ContentLength": 7}
+        result = self.call("POST", "/conversations/abc/attachments/file-1/complete", {"parts": []})
+        self.assertEqual(200, result["statusCode"])
+        self.s3.complete_multipart_upload.assert_not_called()
+        self.s3.head_object.assert_called_once()
+        updates = self.table.update_item.call_args_list
+        self.assertIn("verifying_started_at", updates[0].kwargs["UpdateExpression"])
+        self.assertIn("verifying_completed_at", updates[1].kwargs["UpdateExpression"])
+
+    def test_adaptive_parts_and_initial_url_batch_are_bounded(self):
+        self.table.get_item.return_value = {"Item": {"conversation_id": "abc", "record_key": "META", "owner_id": "operator-1"}}
+        self.s3.create_multipart_upload.return_value = {"UploadId": "upload-123"}
+        self.s3.generate_presigned_url.return_value = "https://s3.example/part"
+        result = self.call("POST", "/conversations/abc/attachments", {"filename": "medium.bin", "content_type": "application/octet-stream", "size": 512 * 1024**2})
+        body = json.loads(result["body"])
+        self.assertEqual("multipart", body["upload_mode"])
+        self.assertGreaterEqual(body["part_count"], 4)
+        self.assertLessEqual(len(body["part_urls"]), conversation.SIGNED_URL_BATCH_SIZE)
+        self.assertLessEqual(body["part_count"], 10_000)
+
+    def test_cancel_aborts_multipart_and_records_terminal_state(self):
+        metadata = {"conversation_id": "abc", "record_key": "META", "owner_id": "operator-1"}
+        attachment = {"conversation_id": "abc", "record_key": "ATTACH#file-1", "owner_id": "operator-1", "status": "UPLOADING", "upload_mode": "multipart", "upload_id": "upload-1", "s3_key": "attachments/x"}
+        self.table.get_item.side_effect = [{"Item": metadata}, {"Item": attachment}]
+        result = self.call("DELETE", "/conversations/abc/attachments/file-1", {})
+        self.assertEqual(200, result["statusCode"])
+        self.s3.abort_multipart_upload.assert_called_once()
+        self.assertEqual("CANCELLED", self.table.update_item.call_args.kwargs["ExpressionAttributeValues"][":cancelled"])

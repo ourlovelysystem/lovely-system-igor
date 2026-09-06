@@ -17,7 +17,10 @@ MAX_CONTEXT_MESSAGES = 60
 MAX_TOOL_ROUNDS = 4
 MAX_ATTACHMENTS_PER_MESSAGE = 20
 MAX_UPLOAD_BYTES = 5 * 1024**3 * 10_000
-DEFAULT_PART_SIZE = 100 * 1024**2
+SMALL_UPLOAD_BYTES = 32 * 1024**2
+MIN_PART_SIZE = 5 * 1024**2
+MULTIPART_TARGET_PARTS = 32
+SIGNED_URL_BATCH_SIZE = 16
 MAX_PART_SIZE = 5 * 1024**3
 INLINE_IMAGE_BYTES = 3_500_000
 INLINE_DOCUMENT_BYTES = 20_000_000
@@ -280,9 +283,12 @@ def _safe_filename(value: Any) -> str:
 
 
 def _part_size(size: int) -> int:
+    # Keep enough parts to feed the browser workers without exceeding S3's 10,000-part limit.
     required = (size + 9_999) // 10_000
+    target = (size + MULTIPART_TARGET_PARTS - 1) // MULTIPART_TARGET_PARTS
     mebibyte = 1024**2
-    selected = max(DEFAULT_PART_SIZE, ((required + mebibyte - 1) // mebibyte) * mebibyte)
+    selected = max(MIN_PART_SIZE, required, target)
+    selected = ((selected + mebibyte - 1) // mebibyte) * mebibyte
     if selected > MAX_PART_SIZE:
         raise RequestError(400, "file exceeds the S3 multipart upload limit")
     return selected
@@ -601,50 +607,33 @@ def handle(
                 raise RequestError(400, "file size is outside Igor's upload range")
             attachment_id = uuid.uuid4().hex
             key = _attachment_key(owner_id, conversation_id, attachment_id, filename)
-            created = s3.create_multipart_upload(
-                Bucket=attachments_bucket,
-                Key=key,
-                ContentType=content_type,
-                ServerSideEncryption="AES256",
-                Metadata={
-                    "igor-owner": owner_id,
-                    "igor-conversation": conversation_id,
-                    "igor-attachment": attachment_id,
-                },
-            )
+            timestamp = now_iso()
+            item = {
+                "conversation_id": conversation_id, "record_key": f"ATTACH#{attachment_id}",
+                "attachment_id": attachment_id, "owner_id": owner_id, "filename": filename,
+                "content_type": content_type, "size": size, "s3_key": key,
+                "s3_uri": f"s3://{attachments_bucket}/{key}", "status": "UPLOADING",
+                "created_at": timestamp, "updated_at": timestamp,
+                "phase_timings": {"preparing_started_at": timestamp, "uploading_started_at": timestamp},
+            }
+            if size <= SMALL_UPLOAD_BYTES:
+                item["upload_mode"] = "direct"
+                table.put_item(Item=item, ConditionExpression="attribute_not_exists(record_key)")
+                url = s3.generate_presigned_url("put_object", Params={"Bucket": attachments_bucket, "Key": key, "ContentType": content_type}, ExpiresIn=3600)
+                return response(201, {"attachment_id": attachment_id, "filename": filename,
+                    "upload_mode": "direct", "url": url, "status": "UPLOADING"})
+            created = s3.create_multipart_upload(Bucket=attachments_bucket, Key=key,
+                ContentType=content_type, ServerSideEncryption="AES256",
+                Metadata={"igor-owner": owner_id, "igor-conversation": conversation_id, "igor-attachment": attachment_id})
             part_size = _part_size(size)
             part_count = (size + part_size - 1) // part_size
-            timestamp = now_iso()
-            table.put_item(
-                Item={
-                    "conversation_id": conversation_id,
-                    "record_key": f"ATTACH#{attachment_id}",
-                    "attachment_id": attachment_id,
-                    "owner_id": owner_id,
-                    "filename": filename,
-                    "content_type": content_type,
-                    "size": size,
-                    "s3_key": key,
-                    "s3_uri": f"s3://{attachments_bucket}/{key}",
-                    "upload_id": created["UploadId"],
-                    "part_size": part_size,
-                    "part_count": part_count,
-                    "status": "UPLOADING",
-                    "created_at": timestamp,
-                    "updated_at": timestamp,
-                },
-                ConditionExpression="attribute_not_exists(record_key)",
-            )
-            return response(
-                201,
-                {
-                    "attachment_id": attachment_id,
-                    "filename": filename,
-                    "part_size": part_size,
-                    "part_count": part_count,
-                    "status": "UPLOADING",
-                },
-            )
+            item.update({"upload_mode": "multipart", "upload_id": created["UploadId"],
+                         "part_size": part_size, "part_count": part_count})
+            table.put_item(Item=item, ConditionExpression="attribute_not_exists(record_key)")
+            signed_urls = [{"part_number": number, "url": str(s3.generate_presigned_url("upload_part", Params={"Bucket": attachments_bucket, "Key": key, "UploadId": created["UploadId"], "PartNumber": number}, ExpiresIn=3600))} for number in range(1, min(part_count, SIGNED_URL_BATCH_SIZE) + 1)]
+            return response(201, {"attachment_id": attachment_id, "filename": filename,
+                "upload_mode": "multipart", "part_size": part_size, "part_count": part_count,
+                "part_urls": signed_urls, "status": "UPLOADING"})
 
         if (
             len(parts) == 5
@@ -679,6 +668,22 @@ def handle(
             )
             return response(200, {"url": url, "part_number": part_number})
 
+        if (len(parts) == 5 and parts[0] == "conversations" and parts[2] == "attachments"
+                and parts[4] == "part-urls" and method == "POST"):
+            if s3 is None or not attachments_bucket:
+                raise RuntimeError("attachment storage is not configured")
+            conversation_id, attachment_id = parts[1], parts[3]
+            _get_meta(table, conversation_id, owner_id)
+            attachment = _get_attachment(table, conversation_id, attachment_id)
+            if attachment.get("owner_id") != owner_id or attachment.get("status") != "UPLOADING" or attachment.get("upload_mode", "multipart") != "multipart":
+                raise RequestError(409, "attachment is not accepting parts")
+            first = body.get("first_part")
+            if not isinstance(first, int) or isinstance(first, bool) or not 1 <= first <= int(attachment["part_count"]):
+                raise RequestError(400, "first_part is invalid")
+            last = min(int(attachment["part_count"]), first + SIGNED_URL_BATCH_SIZE - 1)
+            urls = [{"part_number": number, "url": s3.generate_presigned_url("upload_part", Params={"Bucket": attachments_bucket, "Key": attachment["s3_key"], "UploadId": attachment["upload_id"], "PartNumber": number}, ExpiresIn=3600)} for number in range(first, last + 1)]
+            return response(200, {"part_urls": urls})
+
         if (
             len(parts) == 5
             and parts[0] == "conversations"
@@ -694,7 +699,11 @@ def handle(
             if attachment.get("owner_id") != owner_id or attachment.get("status") != "UPLOADING":
                 raise RequestError(409, "attachment is not awaiting completion")
             parts_value = body.get("parts")
-            expected = int(attachment["part_count"])
+            if attachment.get("upload_mode") == "direct":
+                parts_value = []
+                expected = 0
+            else:
+                expected = int(attachment["part_count"])
             if not isinstance(parts_value, list) or len(parts_value) != expected:
                 raise RequestError(400, f"completion requires exactly {expected} uploaded parts")
             completed_parts: list[dict[str, Any]] = []
@@ -705,11 +714,18 @@ def handle(
                 if not isinstance(etag, str) or not etag:
                     raise RequestError(400, "every uploaded part requires an ETag")
                 completed_parts.append({"PartNumber": index, "ETag": etag})
-            s3.complete_multipart_upload(
-                Bucket=attachments_bucket,
+            if attachment.get("upload_mode", "multipart") == "multipart":
+                s3.complete_multipart_upload(
+                    Bucket=attachments_bucket,
                 Key=attachment["s3_key"],
                 UploadId=attachment["upload_id"],
-                MultipartUpload={"Parts": completed_parts},
+                    MultipartUpload={"Parts": completed_parts},
+                )
+            verifying_started_at = now_iso()
+            table.update_item(
+                Key={"conversation_id": conversation_id, "record_key": f"ATTACH#{attachment_id}"},
+                UpdateExpression="SET phase_timings.verifying_started_at = :verifying_started_at",
+                ExpressionAttributeValues={":verifying_started_at": verifying_started_at},
             )
             head = s3.head_object(Bucket=attachments_bucket, Key=attachment["s3_key"])
             actual_size = int(head["ContentLength"])
@@ -728,7 +744,7 @@ def handle(
                 raise RequestError(400, "uploaded byte count did not match the selected file")
             table.update_item(
                 Key={"conversation_id": conversation_id, "record_key": f"ATTACH#{attachment_id}"},
-                UpdateExpression="SET #status = :ready, updated_at = :updated REMOVE upload_id",
+                UpdateExpression="SET #status = :ready, updated_at = :updated, phase_timings.verifying_completed_at = :updated REMOVE upload_id",
                 ExpressionAttributeNames={"#status": "status"},
                 ExpressionAttributeValues={":ready": "READY", ":updated": now_iso()},
             )
@@ -742,6 +758,22 @@ def handle(
                     "status": "READY",
                 },
             )
+
+        if (len(parts) == 4 and parts[0] == "conversations" and parts[2] == "attachments"
+                and method == "DELETE"):
+            if s3 is None or not attachments_bucket:
+                raise RuntimeError("attachment storage is not configured")
+            conversation_id, attachment_id = parts[1], parts[3]
+            _get_meta(table, conversation_id, owner_id)
+            attachment = _get_attachment(table, conversation_id, attachment_id)
+            if attachment.get("owner_id") != owner_id:
+                raise RequestError(404, "attachment not found")
+            if attachment.get("status") == "UPLOADING" and attachment.get("upload_mode", "multipart") == "multipart":
+                s3.abort_multipart_upload(Bucket=attachments_bucket, Key=attachment["s3_key"], UploadId=attachment["upload_id"])
+            if attachment.get("status") == "UPLOADING":
+                cancelled_at = now_iso()
+                table.update_item(Key={"conversation_id": conversation_id, "record_key": f"ATTACH#{attachment_id}"}, UpdateExpression="SET #status = :cancelled, updated_at = :updated, failure = :failure, phase_timings.cancelled_at = :cancelled_at", ExpressionAttributeNames={"#status": "status"}, ExpressionAttributeValues={":cancelled": "CANCELLED", ":updated": cancelled_at, ":cancelled_at": cancelled_at, ":failure": "cancelled by operator"})
+            return response(200, {"attachment_id": attachment_id, "status": "CANCELLED"})
 
         if len(parts) == 2 and parts[0] == "conversations" and method == "GET":
             meta = _get_meta(table, parts[1], owner_id)
