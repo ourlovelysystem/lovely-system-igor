@@ -25,7 +25,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 | --- | --- | --- | --- | --- |
 | Upload experience v2 | Faster, inspectable uploads that survive conversation navigation safely | IGOR-001, IGOR-002, IGOR-003, IGOR-004, IGOR-005 | PROPOSED | — |
 | Multimodal conversations v1 | Understand the operator's screenshots, images, PDFs, and uploaded files | IGOR-006 | IN PROGRESS | — |
-| Live directed work v1 | Make coding and infrastructure work inspectable, steerable, and recoverable across jobs | IGOR-008, IGOR-011, IGOR-012, IGOR-013 | PROPOSED | — |
+| Live directed work v1 | Make coding and infrastructure work inspectable, steerable, and recoverable across jobs | IGOR-008, IGOR-011, IGOR-012, IGOR-013 | IN PROGRESS | Recorded in deployed stack SourceRevision |
 | Connected capabilities v1 | Research the web, use authorized applications, and create reusable artifacts | IGOR-007, IGOR-009, IGOR-010 | PROPOSED | — |
 
 ## Enhancements
@@ -232,7 +232,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 
 ### IGOR-013 — Recoverable work across disposable jobs
 
-- Status: `READY`
+- Status: `RELEASED`
 - Candidate release: Live directed work v1
 - Observed problem: Igor jobs use disposable workspaces. `workspace.zip`
   preserves files but excludes `.git`, so an unpushed commit disappears when its
@@ -255,6 +255,12 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
     tests and a local commit succeeded.
   - An automated test ends one job before push, restores its artifacts in a new
     workspace, and verifies identical file content and commit history.
+- Release evidence: The disposable-job end-to-end regression creates a binary-containing
+  commit without pushing it, archives the safe workspace, binary patch, bounded Git bundle,
+  and manifest, restores it in a fresh workspace by source job ID, verifies the exact SHA,
+  history, and file bytes, then publishes that recovered object. It also proves ignored
+  secrets and `.env` content are absent from all recovery artifacts. The deployed stack
+  SourceRevision is independently read back after publication.
 
 ## Adding an enhancement
 

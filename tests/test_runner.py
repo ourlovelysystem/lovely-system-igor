@@ -1,5 +1,9 @@
 import importlib.util
+import io
 import json
+import subprocess
+import tempfile
+import zipfile
 import sys
 import unittest
 from pathlib import Path
@@ -518,3 +522,78 @@ class AtomicEventRegressionTests(unittest.TestCase):
         self.assertTrue(all("list_append(if_not_exists(work_events, :empty), :event)" in call.kwargs["UpdateExpression"] for call in calls))
         self.assertEqual("first", calls[0].kwargs["ExpressionAttributeValues"][":event"][0]["message"])
         self.assertEqual("second", calls[1].kwargs["ExpressionAttributeValues"][":event"][0]["message"])
+
+
+class GitRecoveryAcceptanceTests(unittest.TestCase):
+    """Disposable-job acceptance: a local commit survives a failed/no push exactly."""
+
+    def _git(self, cwd, *args):
+        completed = subprocess.run(["git", "-C", str(cwd), *args], text=True, capture_output=True)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        return completed.stdout.strip()
+
+    def test_unpushed_commit_is_restored_exactly_without_secrets_or_unrelated_objects(self):
+        class MemoryS3:
+            def __init__(self): self.objects = {}
+            def put_object(self, **kwargs): self.objects[(kwargs["Bucket"], kwargs["Key"])] = kwargs["Body"]
+            def get_object(self, **kwargs): return {"Body": io.BytesIO(self.objects[(kwargs["Bucket"], kwargs["Key"])])}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            origin, seed, first, second = root / "origin.git", root / "seed", root / "first", root / "second"
+            subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True)
+            subprocess.run(["git", "init", str(seed)], check=True, capture_output=True)
+            self._git(seed, "config", "user.email", "test@example.invalid")
+            self._git(seed, "config", "user.name", "Test")
+            (seed / ".gitignore").write_text("ignored-secret.txt\n")
+            (seed / "tracked.txt").write_text("base\n")
+            self._git(seed, "add", ".")
+            self._git(seed, "commit", "-m", "base")
+            self._git(seed, "branch", "-M", "main")
+            self._git(seed, "remote", "add", "origin", str(origin))
+            self._git(seed, "push", "-u", "origin", "main")
+            subprocess.run(["git", "clone", str(origin), str(first / "repository")], check=True, capture_output=True)
+            repository = first / "repository"
+            self._git(repository, "config", "user.email", "test@example.invalid")
+            self._git(repository, "config", "user.name", "Test")
+            self._git(repository, "checkout", "main")
+            (repository / "tracked.txt").write_text("recovered exact content\n")
+            (repository / "binary.dat").write_bytes(b"\x00binary\xff\n")
+            (repository / "ignored-secret.txt").write_text("DO-NOT-ARCHIVE")
+            (repository / ".env").write_text("TOKEN=DO-NOT-ARCHIVE")
+            self._git(repository, "add", "tracked.txt", "binary.dat")
+            self._git(repository, "commit", "-m", "commit that cannot push")
+            expected_revision = self._git(repository, "rev-parse", "HEAD")
+            expected_history = self._git(repository, "rev-list", "--reverse", "HEAD")
+
+            s3 = MemoryS3()
+            worker = runner.Worker(table=Mock(), bedrock=Mock(), s3=s3, cloudformation=Mock(),
+                evidence_bucket="evidence", execution_role_arn="role", cloudformation_role_arn="role")
+            workspace_uri = worker.put_workspace("firstjob", str(first))
+            manifest = worker.put_recovery_artifacts("firstjob", str(first), workspace_uri)
+            self.assertEqual("not_pushed", manifest["push_status"])
+            self.assertEqual(expected_revision, manifest["resulting_revision"])
+            self.assertEqual(str(origin), manifest["repository_url"])
+            workspace_names = zipfile.ZipFile(io.BytesIO(s3.objects[("evidence", "jobs/firstjob/workspace.zip")])).namelist()
+            self.assertNotIn("repository/ignored-secret.txt", workspace_names)
+            self.assertNotIn("repository/.env", workspace_names)
+            self.assertFalse(any(".git/" in name for name in workspace_names))
+            artifact_bytes = b"".join(s3.objects.values())
+            self.assertNotIn(b"DO-NOT-ARCHIVE", artifact_bytes)
+            bundle_heads = subprocess.run(["git", "bundle", "list-heads", "-"], input=s3.objects[("evidence", "jobs/firstjob/recovery/history.bundle")], capture_output=True).stdout.decode()
+            self.assertIn(expected_revision, bundle_heads)
+
+            source = {"job_id": "firstjob", "recovery_manifest_uri": manifest["manifest_uri"]}
+            worker.table.get_item.return_value = {"Item": source}
+            restored = worker.restore_recovery("firstjob", str(second))
+            recovered = second / "repository"
+            self.assertEqual(expected_revision, restored["restored_revision"])
+            self.assertEqual(expected_revision, self._git(recovered, "rev-parse", "HEAD"))
+            self.assertEqual(expected_history, self._git(recovered, "rev-list", "--reverse", "HEAD"))
+            self.assertEqual(b"\x00binary\xff\n", (recovered / "binary.dat").read_bytes())
+            self.assertFalse((recovered / "ignored-secret.txt").exists())
+            self.assertFalse((recovered / ".env").exists())
+            # The second job can publish the recovered object without rebuilding a replacement commit.
+            self._git(recovered, "push", "origin", "main")
+            remote = self._git(recovered, "ls-remote", "origin", "refs/heads/main").split()[0]
+            self.assertEqual(expected_revision, remote)

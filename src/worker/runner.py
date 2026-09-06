@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+from urllib.parse import urlsplit, urlunsplit
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,7 @@ TERMINAL_STATES = {"WORKING", "FAILED", "BLOCKED", "INCOMPLETE"}
 MAX_AGENT_ROUNDS = 30
 MAX_COMMAND_OUTPUT_CHARS = 20_000
 MAX_WORK_EVENTS = 200
+MAX_RECOVERY_ARTIFACT_BYTES = 25_000_000
 
 # Event text is operator-facing and intentionally excludes command lines and command output.
 _SECRET_VALUE = re.compile(r"(?i)\b(token|secret|password|api[_-]?key|authorization)\b\s*([:=])\s*[^\s,;]+")
@@ -439,27 +441,144 @@ class Worker:
         )
         return f"s3://{self.evidence_bucket}/{key}"
 
+    @staticmethod
+    def _git_output(repository: Path, *args: str, check: bool = True) -> str:
+        completed = subprocess.run(["git", "-C", str(repository), *args], text=True,
+            capture_output=True, check=False)
+        if check and completed.returncode:
+            raise RuntimeError(f"git {' '.join(args)} failed: {completed.stderr.strip()}")
+        return completed.stdout.strip()
+
+    @staticmethod
+    def _repository_in(workspace: str) -> Path | None:
+        roots = sorted(path.parent for path in Path(workspace).rglob(".git") if path.is_dir())
+        if len(roots) > 1:
+            raise ValueError("recovery supports one repository per coding job")
+        return roots[0] if roots else None
+
+    @staticmethod
+    def _safe_repository_url(value: str) -> str:
+        """Remove HTTP userinfo; the workspace must never persist a Git credential."""
+        parsed = urlsplit(value)
+        if parsed.scheme in {"http", "https"} and parsed.hostname:
+            host = parsed.hostname + (f":{parsed.port}" if parsed.port else "")
+            return urlunsplit((parsed.scheme, host, parsed.path, parsed.query, parsed.fragment))
+        return value
+
+    def _workspace_path_is_safe(self, workspace: str, path: Path) -> bool:
+        relative = path.relative_to(workspace)
+        if ".git" in relative.parts:
+            return False
+        # Keep ordinary untracked files, but never archive conventional credential files.
+        name = path.name.lower()
+        if name in {".env", ".netrc", "credentials", "credential", "id_rsa", "id_ed25519"} or name.endswith(".pem"):
+            return False
+        repository = self._repository_in(workspace)
+        if repository and (path == repository or repository in path.parents):
+            checked = subprocess.run(["git", "-C", str(repository), "check-ignore", "-q", "--",
+                str(path.relative_to(repository))], capture_output=True, check=False)
+            if checked.returncode == 0:
+                return False
+        return True
+
     def put_workspace(self, job_id: str, workspace: str) -> str:
         output = io.BytesIO()
         total_bytes = 0
         with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for path in sorted(Path(workspace).rglob("*")):
-                if not path.is_file() or path.is_symlink() or ".git" in path.parts:
+                if not path.is_file() or path.is_symlink() or not self._workspace_path_is_safe(workspace, path):
                     continue
-                size = path.stat().st_size
-                total_bytes += size
-                if total_bytes > 25_000_000:
+                total_bytes += path.stat().st_size
+                if total_bytes > MAX_RECOVERY_ARTIFACT_BYTES:
                     raise ValueError("workspace artifact exceeds 25 MB")
                 archive.write(path, path.relative_to(workspace).as_posix())
         key = f"jobs/{job_id}/workspace.zip"
-        self.s3.put_object(
-            Bucket=self.evidence_bucket,
-            Key=key,
-            Body=output.getvalue(),
-            ContentType="application/zip",
-            ServerSideEncryption="AES256",
-        )
+        self.s3.put_object(Bucket=self.evidence_bucket, Key=key, Body=output.getvalue(),
+            ContentType="application/zip", ServerSideEncryption="AES256")
         return f"s3://{self.evidence_bucket}/{key}"
+
+    def put_recovery_artifacts(self, job_id: str, workspace: str, workspace_uri: str) -> dict[str, Any] | None:
+        """Persist just this job's Git range, never .git wholesale or remote credentials."""
+        repository = self._repository_in(workspace)
+        if repository is None:
+            return None
+        repository_url = self._safe_repository_url(self._git_output(repository, "config", "--get", "remote.origin.url"))
+        if not repository_url:
+            raise ValueError("coding repository has no origin URL for recovery")
+        resulting_revision = self._git_output(repository, "rev-parse", "HEAD")
+        branch = self._git_output(repository, "symbolic-ref", "--quiet", "--short", "HEAD", check=False) or "detached"
+        base_revision = self._git_output(repository, "merge-base", "HEAD", "@{upstream}", check=False)
+        if not base_revision:
+            base_revision = self._git_output(repository, "rev-parse", "HEAD^", check=False) or resulting_revision
+        patch = (self._git_output(repository, "diff", "--binary", f"{base_revision}..{resulting_revision}") + "\n" +
+                 self._git_output(repository, "diff", "--binary"))
+        bundle_path = Path(workspace) / ".igor-recovery.bundle"
+        recovery_ref = "refs/igor/recovery"
+        self._git_output(repository, "update-ref", recovery_ref, resulting_revision)
+        completed = subprocess.run(["git", "-C", str(repository), "bundle", "create", str(bundle_path),
+            recovery_ref, f"^{base_revision}"], capture_output=True, text=True, check=False)
+        self._git_output(repository, "update-ref", "-d", recovery_ref, check=False)
+        if completed.returncode:
+            raise RuntimeError(f"could not create recovery bundle: {completed.stderr.strip()}")
+        bundle = bundle_path.read_bytes()
+        bundle_path.unlink()
+        if len(bundle) > MAX_RECOVERY_ARTIFACT_BYTES:
+            raise ValueError("Git recovery bundle exceeds 25 MB")
+        remote_tip = self._git_output(repository, "ls-remote", "origin", f"refs/heads/{branch}", check=False)
+        pushed = bool(remote_tip and remote_tip.split()[0].lower() == resulting_revision.lower())
+        prefix = f"jobs/{job_id}/recovery"
+        patch_key, bundle_key, manifest_key = f"{prefix}/changes.patch", f"{prefix}/history.bundle", f"{prefix}/manifest.json"
+        manifest = {"version": 1, "repository_url": repository_url, "base_revision": base_revision,
+            "resulting_revision": resulting_revision, "branch": branch, "push_status": "pushed" if pushed else "not_pushed",
+            "workspace_uri": workspace_uri, "patch_uri": f"s3://{self.evidence_bucket}/{patch_key}",
+            "bundle_uri": f"s3://{self.evidence_bucket}/{bundle_key}",
+            "repository_path": repository.relative_to(workspace).as_posix(),
+            "worktree_status": self._git_output(repository, "status", "--porcelain=v1")}
+        for key, body, content_type in ((patch_key, patch.encode(), "text/x-diff"), (bundle_key, bundle, "application/x-git-bundle"),
+                                        (manifest_key, json.dumps(manifest, sort_keys=True).encode(), "application/json")):
+            self.s3.put_object(Bucket=self.evidence_bucket, Key=key, Body=body, ContentType=content_type,
+                ServerSideEncryption="AES256")
+        manifest["manifest_uri"] = f"s3://{self.evidence_bucket}/{manifest_key}"
+        return manifest
+
+    def restore_recovery(self, source_job_id: str, workspace: str) -> dict[str, Any]:
+        source = self.table.get_item(Key={"job_id": source_job_id}, ConsistentRead=True).get("Item")
+        if not source or not source.get("recovery_manifest_uri"):
+            raise ValueError(f"source job {source_job_id} has no recoverable Git artifacts")
+        def get_uri(uri: str) -> bytes:
+            bucket, key = uri.removeprefix("s3://").split("/", 1)
+            if bucket != self.evidence_bucket:
+                raise ValueError("recovery artifact is outside Igor's evidence bucket")
+            return self.s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+        manifest = json.loads(get_uri(source["recovery_manifest_uri"]))
+        required = {"repository_url", "base_revision", "resulting_revision", "branch", "workspace_uri", "bundle_uri"}
+        if not required <= set(manifest) or not re.fullmatch(r"[0-9a-f]{40}", manifest["resulting_revision"], re.I):
+            raise ValueError("recovery manifest is invalid")
+        destination = Path(workspace) / manifest.get("repository_path", "repository")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        clone = subprocess.run(["git", "clone", manifest["repository_url"], str(destination)], capture_output=True, text=True, check=False)
+        if clone.returncode:
+            raise RuntimeError(f"could not clone recovery repository: {clone.stderr.strip()}")
+        bundle_file = Path(workspace) / ".restore.bundle"
+        bundle_file.write_bytes(get_uri(manifest["bundle_uri"]))
+        fetched = subprocess.run(["git", "-C", str(destination), "fetch", str(bundle_file), manifest["resulting_revision"]], capture_output=True, text=True, check=False)
+        bundle_file.unlink()
+        if fetched.returncode:
+            raise RuntimeError(f"could not restore Git bundle: {fetched.stderr.strip()}")
+        self._git_output(destination, "checkout", "-B", manifest["branch"], manifest["resulting_revision"])
+        # Overlay the safe archived worktree for uncommitted, non-ignored files.
+        with zipfile.ZipFile(io.BytesIO(get_uri(manifest["workspace_uri"]))) as archive:
+            for info in archive.infolist():
+                target = Path(workspace, info.filename).resolve()
+                if info.is_dir() or not str(target).startswith(str(Path(workspace).resolve()) + os.sep):
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(info))
+        restored = self._git_output(destination, "rev-parse", "HEAD")
+        if restored != manifest["resulting_revision"]:
+            raise RuntimeError("recovery did not restore the exact commit")
+        manifest["restored_revision"] = restored
+        return manifest
 
     def publish_completion(
         self,
@@ -826,6 +945,11 @@ evidence ran out. A model statement is never proof."""
         workspace = f"/tmp/igor-work-{job_id}"
         Path(workspace).mkdir(mode=0o700, parents=True, exist_ok=False)
         objective = (item.get("objective") or item["idea"]) + self.attachment_manifest(item)
+        if item.get("recovery_source_job_id"):
+            self.record_event(job_id, "activity", "Restoring Git-native artifacts from the source job.", stage="recovery")
+            restored = self.restore_recovery(item["recovery_source_job_id"], workspace)
+            evidence["recovery"] = {"source_job_id": item["recovery_source_job_id"], **restored}
+            objective += f"\nRecovered source job {item['recovery_source_job_id']} at exact commit {restored['restored_revision']}."
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": [{"text": objective}]}
         ]
@@ -1002,6 +1126,9 @@ evidence ran out. A model statement is never proof."""
                     command_count=len(commands),
                 )
                 workspace_uri = self.put_workspace(job_id, workspace)
+                recovery = self.put_recovery_artifacts(job_id, workspace, workspace_uri)
+                if recovery:
+                    evidence["recovery_artifacts"] = recovery
                 evidence.update(
                     {
                         "status": status,
@@ -1031,6 +1158,7 @@ evidence ran out. A model statement is never proof."""
                     "limitations": finish_request["limitations"],
                     "evidence_uri": evidence_uri,
                     "workspace_uri": workspace_uri,
+                    "recovery_manifest_uri": recovery["manifest_uri"] if recovery else "",
                     "finished_at": finished_at,
                     "command_count": len(commands),
                     "progress_message": finish_request["summary"][:500],
@@ -1063,6 +1191,9 @@ evidence ran out. A model statement is never proof."""
 
         finished_at = now_iso()
         workspace_uri = self.put_workspace(job_id, workspace)
+        recovery = self.put_recovery_artifacts(job_id, workspace, workspace_uri)
+        if recovery:
+            evidence["recovery_artifacts"] = recovery
         summary = f"Agent exhausted {MAX_AGENT_ROUNDS} execution rounds without adequate terminal evidence."
         evidence.update(
             {

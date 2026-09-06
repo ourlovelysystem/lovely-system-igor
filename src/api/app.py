@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -104,6 +105,10 @@ def handle(
         if not isinstance(model_id, str) or not model_id.strip():
             return response(400, {"error": "model_id must be a non-empty string"})
 
+        recovery_source_job_id = body.get("recovery_source_job_id")
+        if recovery_source_job_id is not None and (not isinstance(recovery_source_job_id, str) or not re.fullmatch(r"[0-9a-f]{32}", recovery_source_job_id)):
+            return response(400, {"error": "recovery_source_job_id must be a 32-character job ID"})
+
         attachments = body.get("attachments", [])
         if not isinstance(attachments, list) or len(attachments) > 20:
             return response(400, {"error": "attachments must contain at most 20 items"})
@@ -132,6 +137,8 @@ def handle(
         }
         if attachments:
             item["attachments"] = attachments
+        if recovery_source_job_id:
+            item["recovery_source_job_id"] = recovery_source_job_id
         conversation_id = body.get("conversation_id")
         if conversation_id is not None:
             if not isinstance(conversation_id, str) or not conversation_id.strip():
