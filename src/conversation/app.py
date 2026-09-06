@@ -21,6 +21,7 @@ DEFAULT_PART_SIZE = 100 * 1024**2
 MAX_PART_SIZE = 5 * 1024**3
 INLINE_IMAGE_BYTES = 3_500_000
 INLINE_DOCUMENT_BYTES = 20_000_000
+MAX_INLINE_ATTACHMENT_BYTES = 20_000_000
 BYTES_MARKER = "__igor_bytes_base64_v1__"
 
 IMAGE_FORMATS = {
@@ -219,16 +220,26 @@ def _message_items(table: Any, conversation_id: str) -> list[dict[str, Any]]:
 
 def _load_messages(table: Any, conversation_id: str) -> list[dict[str, Any]]:
     items = _message_items(table, conversation_id)
-    return [
-        {
-            "role": item["role"],
-            "content": json.loads(
-                item["content_json"],
-                object_hook=_content_json_object_hook,
-            ),
-        }
-        for item in items
-    ]
+    messages: list[dict[str, Any]] = []
+    for item in items:
+        content = json.loads(
+            item["content_json"],
+            object_hook=_content_json_object_hook,
+        )
+        # Releases before the byte-source fix persisted Bedrock s3Location
+        # blocks. The OpenAI model rejects those blocks, so retain the manifest
+        # text and omit only the incompatible historical media block.
+        content = [
+            block
+            for block in content
+            if not (
+                isinstance(block, dict)
+                and isinstance(block.get("image") or block.get("document"), dict)
+                and "s3Location" in (block.get("image") or block.get("document"))["source"]
+            )
+        ]
+        messages.append({"role": item["role"], "content": content})
+    return messages
 
 
 def _public_messages(table: Any, conversation_id: str) -> list[dict[str, Any]]:
@@ -341,13 +352,34 @@ def _attachment_content(text: str, attachments: list[dict[str, Any]]) -> list[di
             f"- {attachment['filename']} | {attachment['content_type']} | "
             f"{attachment['size']} bytes | {attachment['s3_uri']}"
         )
+    content.insert(1, {"text": "\n".join(manifest)})
+    return content
+
+
+def _model_attachment_blocks(
+    s3: Any,
+    bucket: str,
+    attachments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Load only model-sized files; keep their bytes out of DynamoDB history."""
+    blocks: list[dict[str, Any]] = []
+    remaining = MAX_INLINE_ATTACHMENT_BYTES
+    for attachment in attachments:
+        size = int(attachment["size"])
         content_type = attachment["content_type"].lower()
         suffix = "." + attachment["filename"].lower().rsplit(".", 1)[-1]
-        source = {"s3Location": {"uri": attachment["s3_uri"]}}
-        if content_type in IMAGE_FORMATS and attachment["size"] <= INLINE_IMAGE_BYTES:
-            content.append({"image": {"format": IMAGE_FORMATS[content_type], "source": source}})
-        elif suffix in DOCUMENT_FORMATS and attachment["size"] <= INLINE_DOCUMENT_BYTES:
-            content.append(
+        is_image = content_type in IMAGE_FORMATS and size <= INLINE_IMAGE_BYTES
+        is_document = suffix in DOCUMENT_FORMATS and size <= INLINE_DOCUMENT_BYTES
+        if (not is_image and not is_document) or size > remaining:
+            continue
+        body = s3.get_object(Bucket=bucket, Key=attachment["s3_key"])["Body"].read()
+        if len(body) != size:
+            raise RuntimeError(f"attachment byte count changed: {attachment['filename']}")
+        source = {"bytes": body}
+        if is_image:
+            blocks.append({"image": {"format": IMAGE_FORMATS[content_type], "source": source}})
+        else:
+            blocks.append(
                 {
                     "document": {
                         "format": DOCUMENT_FORMATS[suffix],
@@ -356,8 +388,8 @@ def _attachment_content(text: str, attachments: list[dict[str, Any]]) -> list[di
                     }
                 }
             )
-    content.insert(1, {"text": "\n".join(manifest)})
-    return content
+        remaining -= size
+    return blocks
 
 
 def _invoke_control(lambda_client: Any, function_name: str, method: str, path: str, body: Any) -> Any:
@@ -424,8 +456,16 @@ def converse(
     model_id: str,
     conversation_id: str,
     attachments: list[dict[str, Any]] | None = None,
+    s3: Any = None,
+    attachments_bucket: str = "",
 ) -> dict[str, Any]:
     messages = _load_messages(table, conversation_id)
+    if attachments:
+        if s3 is None or not attachments_bucket:
+            raise RuntimeError("attachment storage is not configured")
+        messages[-1]["content"].extend(
+            _model_attachment_blocks(s3, attachments_bucket, attachments)
+        )
     tool_events: list[dict[str, Any]] = []
 
     for _ in range(MAX_TOOL_ROUNDS):
@@ -758,6 +798,8 @@ def handle(
                 model_id=model_id,
                 conversation_id=conversation_id,
                 attachments=attachments,
+                s3=s3,
+                attachments_bucket=attachments_bucket,
             )
             return response(200, {"conversation_id": conversation_id, **result})
 

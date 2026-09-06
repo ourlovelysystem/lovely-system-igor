@@ -7,8 +7,8 @@
 2. API Gateway validates dashboard tokens before invoking Igor.
 3. Attached files upload directly from the browser to private S3 using signed
    multipart part URLs. Lambda handles metadata and signatures, not file bytes.
-4. The conversational Lambda loads durable context, gives supported images and
-   documents to Bedrock by S3 location, and submits arbitrary or large-file work
+4. The conversational Lambda loads durable context, reads supported small images
+   and documents from private S3 into the current Bedrock request, and submits arbitrary or large-file work
    with the operator's complete attachment manifest.
 5. The conversational Lambda calls Terra and submits the operator's complete
    objective through one general execution tool.

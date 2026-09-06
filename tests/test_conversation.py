@@ -117,6 +117,30 @@ class ConversationTests(unittest.TestCase):
             bytes,
         )
 
+    def test_old_s3_location_media_block_is_removed_from_model_history(self):
+        self.table.query.return_value = {
+            "Items": [
+                {
+                    "role": "user",
+                    "content_json": json.dumps(
+                        [
+                            {"text": "Inspect it"},
+                            {
+                                "image": {
+                                    "format": "png",
+                                    "source": {"s3Location": {"uri": "s3://igor/old.png"}},
+                                }
+                            },
+                        ]
+                    ),
+                }
+            ]
+        }
+
+        loaded = conversation._load_messages(self.table, "abc")
+
+        self.assertEqual([{"text": "Inspect it"}], loaded[0]["content"])
+
     def test_general_task_tool_queues_job_and_returns_truthful_followup(self):
         self.table.query.return_value = {
             "Items": [
@@ -203,7 +227,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(6 * 1024**3, stored["size"])
         self.assertTrue(stored["s3_key"].startswith("attachments/operator-1/abc/"))
 
-    def test_small_image_is_passed_to_bedrock_from_private_s3(self):
+    def test_small_image_is_loaded_from_private_s3_for_bedrock(self):
         attachment = {
             "attachment_id": "image-1",
             "filename": "screen.png",
@@ -212,12 +236,19 @@ class ConversationTests(unittest.TestCase):
             "s3_uri": "s3://igor/attachments/operator/abc/image-1/screen.png",
             "s3_key": "attachments/operator/abc/image-1/screen.png",
         }
+        self.s3.get_object.return_value = {"Body": io.BytesIO(b"image-data")}
+        attachment["size"] = len(b"image-data")
         content = conversation._attachment_content("What is wrong here?", [attachment])
-        image = next(block["image"] for block in content if "image" in block)
+        self.assertFalse(any("image" in block for block in content))
+        blocks = conversation._model_attachment_blocks(self.s3, "igor", [attachment])
+        image = blocks[0]["image"]
         self.assertEqual("png", image["format"])
-        self.assertEqual(attachment["s3_uri"], image["source"]["s3Location"]["uri"])
+        self.assertEqual(b"image-data", image["source"]["bytes"])
+        self.s3.get_object.assert_called_once_with(
+            Bucket="igor", Key=attachment["s3_key"]
+        )
 
-    def test_pdf_is_passed_to_bedrock_from_private_s3(self):
+    def test_pdf_is_loaded_from_private_s3_for_bedrock(self):
         attachment = {
             "attachment_id": "pdf-1",
             "filename": "inspection report.pdf",
@@ -226,11 +257,13 @@ class ConversationTests(unittest.TestCase):
             "s3_uri": "s3://igor/attachments/operator/abc/pdf-1/report.pdf",
             "s3_key": "attachments/operator/abc/pdf-1/report.pdf",
         }
-        content = conversation._attachment_content("Review it", [attachment])
-        document = next(block["document"] for block in content if "document" in block)
+        self.s3.get_object.return_value = {"Body": io.BytesIO(b"pdf-data")}
+        attachment["size"] = len(b"pdf-data")
+        blocks = conversation._model_attachment_blocks(self.s3, "igor", [attachment])
+        document = blocks[0]["document"]
         self.assertEqual("pdf", document["format"])
         self.assertEqual("inspection report", document["name"])
-        self.assertEqual(attachment["s3_uri"], document["source"]["s3Location"]["uri"])
+        self.assertEqual(b"pdf-data", document["source"]["bytes"])
 
     def test_completes_uploaded_parts_and_verifies_total_size(self):
         metadata = {"conversation_id": "abc", "record_key": "META", "owner_id": "operator-1"}
@@ -273,6 +306,9 @@ class ConversationTests(unittest.TestCase):
         content = conversation._attachment_content("Inspect this", [attachment])
         self.assertFalse(any("image" in block or "document" in block for block in content))
         self.assertIn(attachment["s3_uri"], content[1]["text"])
+        blocks = conversation._model_attachment_blocks(self.s3, "igor", [attachment])
+        self.assertEqual([], blocks)
+        self.s3.get_object.assert_not_called()
 
 
 if __name__ == "__main__":

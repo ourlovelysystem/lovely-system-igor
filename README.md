@@ -64,7 +64,9 @@ seven days. The implementation supports the S3 multipart ceiling of 10,000 parts
 at 5 GiB per part.
 
 Supported images and documents within the conversational model's direct-input
-threshold are presented to Bedrock from S3. Every other attachment, including
+threshold are loaded from private S3 and presented to Bedrock as bytes for the
+current request. The bytes are not stored in DynamoDB conversation history.
+Every other attachment, including
 very large files, is passed to the execution worker by private S3 URI so it can
 inspect the object with streaming or range-based tools.
 
