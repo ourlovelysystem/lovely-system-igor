@@ -56,8 +56,13 @@ get_job_status for a known job. Never imply that work was performed unless a too
 QUEUED and RUNNING are unfinished. WORKING requires recorded execution and verification evidence.
 Report BLOCKED, FAILED, or INCOMPLETE plainly. Do not invent AWS, GitHub, test, deployment, endpoint,
 or evidence results. The operator may attach files. Image and document blocks are the files themselves.
-An attachment manifest gives the private S3 location for every attachment. If a file is too large or
-not a model-supported format, use execute_task so the worker can inspect it directly in S3."""
+An attachment manifest gives the private S3 location for every attachment, followed by an authoritative
+inspection routing record. Only files marked `conversation-model` were supplied to you as file bytes.
+Files marked `execution-worker` were not inspected by you: use execute_task with the complete request
+so the worker inspects them directly in S3. Do not claim that a file was read until its assigned component
+has done so. For every file-derived claim, name the file and cite a useful location (page, row range,
+sheet, or section when available). State plainly when the worker finds an unsupported, corrupt, encrypted,
+or truncated input and identify the inspecting component."""
 
 TOOL_CONFIG = {
     "tools": [
@@ -362,40 +367,65 @@ def _attachment_content(text: str, attachments: list[dict[str, Any]]) -> list[di
     return content
 
 
+def _image_signature_is_valid(fmt: str, body: bytes) -> bool:
+    """Reject obvious renamed/corrupt images before invoking the conversational model."""
+    signatures = {
+        "png": b"\x89PNG\r\n\x1a\n", "jpeg": b"\xff\xd8\xff", "gif": b"GIF87a",
+        "webp": b"RIFF",
+    }
+    if not body.startswith(signatures[fmt]):
+        return False
+    return fmt != "webp" or len(body) >= 12 and body[8:12] == b"WEBP"
+
+
+def _attachment_routing(attachments: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Route only advertised model modalities directly; all other files require worker inspection."""
+    routed: list[dict[str, str]] = []
+    for attachment in attachments:
+        content_type = attachment["content_type"].lower()
+        direct = content_type in IMAGE_FORMATS and int(attachment["size"]) <= INLINE_IMAGE_BYTES
+        routed.append({
+            "filename": attachment["filename"],
+            "component": "conversation-model" if direct else "execution-worker",
+            "reason": "small supported image" if direct else "not a direct image input or exceeds direct-input limit",
+        })
+    return routed
+
+
 def _model_attachment_blocks(
     s3: Any,
     bucket: str,
     attachments: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Load only model-sized files; keep their bytes out of DynamoDB history."""
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Load only actual model-supported image bytes; retain routing evidence outside history."""
     blocks: list[dict[str, Any]] = []
+    routing = _attachment_routing(attachments)
     remaining = MAX_INLINE_ATTACHMENT_BYTES
-    for attachment in attachments:
-        size = int(attachment["size"])
-        content_type = attachment["content_type"].lower()
-        suffix = "." + attachment["filename"].lower().rsplit(".", 1)[-1]
-        is_image = content_type in IMAGE_FORMATS and size <= INLINE_IMAGE_BYTES
-        is_document = suffix in DOCUMENT_FORMATS and size <= INLINE_DOCUMENT_BYTES
-        if (not is_image and not is_document) or size > remaining:
+    for attachment, route in zip(attachments, routing):
+        if route["component"] != "conversation-model":
             continue
+        if int(attachment["size"]) > remaining:
+            route.update(component="execution-worker", reason="aggregate direct-input limit")
+            continue
+        size = int(attachment["size"])
+        fmt = IMAGE_FORMATS[attachment["content_type"].lower()]
         body = s3.get_object(Bucket=bucket, Key=attachment["s3_key"])["Body"].read()
         if len(body) != size:
-            raise RuntimeError(f"attachment byte count changed: {attachment['filename']}")
-        source = {"bytes": body}
-        if is_image:
-            blocks.append({"image": {"format": IMAGE_FORMATS[content_type], "source": source}})
-        else:
-            blocks.append(
-                {
-                    "document": {
-                        "format": DOCUMENT_FORMATS[suffix],
-                        "name": _document_name(attachment["filename"]),
-                        "source": source,
-                    }
-                }
-            )
+            route.update(component="execution-worker", reason="truncated or changed object")
+            continue
+        if not _image_signature_is_valid(fmt, body):
+            route.update(component="execution-worker", reason="corrupt or mismatched image signature")
+            continue
+        blocks.append({"image": {"format": fmt, "source": {"bytes": body}}})
         remaining -= size
-    return blocks
+    return blocks, routing
+
+
+def _routing_block(routing: list[dict[str, str]]) -> dict[str, str]:
+    lines = ["Authoritative attachment inspection routing:"]
+    for item in routing:
+        lines.append(f"- {item['filename']}: {item['component']} ({item['reason']})")
+    return {"text": "\n".join(lines)}
 
 
 def _invoke_control(lambda_client: Any, function_name: str, method: str, path: str, body: Any) -> Any:
@@ -469,9 +499,11 @@ def converse(
     if attachments:
         if s3 is None or not attachments_bucket:
             raise RuntimeError("attachment storage is not configured")
-        messages[-1]["content"].extend(
-            _model_attachment_blocks(s3, attachments_bucket, attachments)
-        )
+        blocks, routing = _model_attachment_blocks(s3, attachments_bucket, attachments)
+        # This is authoritative routing metadata, not a model assertion.  It keeps
+        # direct model bytes private to this invocation while making worker handoff explicit.
+        messages[-1]["content"].append(_routing_block(routing))
+        messages[-1]["content"].extend(blocks)
     tool_events: list[dict[str, Any]] = []
 
     for _ in range(MAX_TOOL_ROUNDS):

@@ -68,3 +68,12 @@ grep -q 'Unable to read the existing GitHubTokenSecretName parameter; refusing t
 [[ ! -s "$work/sam.log" ]]
 ! grep -q 'token contents' "$work/out" "$work/err"
 echo 'deploy.sh regression tests passed'
+# Required command checks run before a stack lookup; absence cannot be mistaken for a new stack.
+mkdir -p "$work/no-aws"
+ln -sf "$work/bin/sam" "$work/no-aws/sam"
+: > "$work/aws.log"
+if env "PATH=$work/no-aws" SAM_LOG="$work/sam.log" AWS_LOG="$work/aws.log" SCENARIO=existing IGOR_STACK_NAME=test-stack IGOR_SOURCE_REVISION=test-revision /bin/bash "$repo_root/scripts/deploy.sh" >"$work/out" 2>"$work/err"; then
+  echo 'expected missing AWS CLI failure' >&2; exit 1
+fi
+grep -q 'AWS CLI is required' "$work/err"
+[[ ! -s "$work/aws.log" ]]

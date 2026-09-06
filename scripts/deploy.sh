@@ -10,6 +10,13 @@ region="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 model_id="${IGOR_MODEL_ID:-global.openai.gpt-5.6-terra}"
 source_repository="${IGOR_SOURCE_REPOSITORY:-https://github.com/ourlovelysystem/lovely-system-igor.git}"
 source_revision="${IGOR_SOURCE_REVISION:-$(git rev-parse HEAD 2>/dev/null || echo main)}"
+
+# Validate the required clients before any stack lookup.  This prevents a missing
+# AWS CLI from being misreported as a nonexistent stack (and accidentally taking
+# the new-stack credential path).
+command -v aws >/dev/null || { echo "AWS CLI is required" >&2; exit 1; }
+command -v sam >/dev/null || { echo "AWS SAM CLI is required" >&2; exit 1; }
+
 github_token_secret_name=""
 github_token_parameter=()
 
@@ -53,9 +60,6 @@ else
     github_token_parameter=("GitHubTokenSecretName=$github_token_secret_name")
   fi
 fi
-
-command -v aws >/dev/null || { echo "AWS CLI is required" >&2; exit 1; }
-command -v sam >/dev/null || { echo "AWS SAM CLI is required" >&2; exit 1; }
 
 sam build
 sam deploy \

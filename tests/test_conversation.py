@@ -236,14 +236,15 @@ class ConversationTests(unittest.TestCase):
             "s3_uri": "s3://igor/attachments/operator/abc/image-1/screen.png",
             "s3_key": "attachments/operator/abc/image-1/screen.png",
         }
-        self.s3.get_object.return_value = {"Body": io.BytesIO(b"image-data")}
-        attachment["size"] = len(b"image-data")
+        self.s3.get_object.return_value = {"Body": io.BytesIO(b"\x89PNG\r\n\x1a\nimage-data")}
+        attachment["size"] = len(b"\x89PNG\r\n\x1a\nimage-data")
         content = conversation._attachment_content("What is wrong here?", [attachment])
         self.assertFalse(any("image" in block for block in content))
-        blocks = conversation._model_attachment_blocks(self.s3, "igor", [attachment])
+        blocks, routing = conversation._model_attachment_blocks(self.s3, "igor", [attachment])
+        self.assertEqual("conversation-model", routing[0]["component"])
         image = blocks[0]["image"]
         self.assertEqual("png", image["format"])
-        self.assertEqual(b"image-data", image["source"]["bytes"])
+        self.assertEqual(b"\x89PNG\r\n\x1a\nimage-data", image["source"]["bytes"])
         self.s3.get_object.assert_called_once_with(
             Bucket="igor", Key=attachment["s3_key"]
         )
@@ -257,13 +258,19 @@ class ConversationTests(unittest.TestCase):
             "s3_uri": "s3://igor/attachments/operator/abc/pdf-1/report.pdf",
             "s3_key": "attachments/operator/abc/pdf-1/report.pdf",
         }
-        self.s3.get_object.return_value = {"Body": io.BytesIO(b"pdf-data")}
-        attachment["size"] = len(b"pdf-data")
-        blocks = conversation._model_attachment_blocks(self.s3, "igor", [attachment])
-        document = blocks[0]["document"]
-        self.assertEqual("pdf", document["format"])
-        self.assertEqual("inspection report", document["name"])
-        self.assertEqual(b"pdf-data", document["source"]["bytes"])
+        blocks, routing = conversation._model_attachment_blocks(self.s3, "igor", [attachment])
+        self.assertEqual([], blocks)
+        self.assertEqual("execution-worker", routing[0]["component"])
+        self.assertIn("not a direct image", routing[0]["reason"])
+        self.s3.get_object.assert_not_called()
+
+    def test_mismatched_image_signature_is_routed_to_worker_without_model_bytes(self):
+        attachment = {"filename": "renamed.png", "content_type": "image/png", "size": 3, "s3_key": "attachments/x"}
+        self.s3.get_object.return_value = {"Body": io.BytesIO(b"bad")}
+        blocks, routing = conversation._model_attachment_blocks(self.s3, "igor", [attachment])
+        self.assertEqual([], blocks)
+        self.assertEqual("execution-worker", routing[0]["component"])
+        self.assertIn("corrupt", routing[0]["reason"])
 
     def test_completes_uploaded_parts_and_verifies_total_size(self):
         metadata = {"conversation_id": "abc", "record_key": "META", "owner_id": "operator-1"}
@@ -306,8 +313,9 @@ class ConversationTests(unittest.TestCase):
         content = conversation._attachment_content("Inspect this", [attachment])
         self.assertFalse(any("image" in block or "document" in block for block in content))
         self.assertIn(attachment["s3_uri"], content[1]["text"])
-        blocks = conversation._model_attachment_blocks(self.s3, "igor", [attachment])
+        blocks, routing = conversation._model_attachment_blocks(self.s3, "igor", [attachment])
         self.assertEqual([], blocks)
+        self.assertEqual("execution-worker", routing[0]["component"])
         self.s3.get_object.assert_not_called()
 
 
