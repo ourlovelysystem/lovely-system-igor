@@ -506,6 +506,15 @@ def converse(
         # direct model bytes private to this invocation while making worker handoff explicit.
         messages[-1]["content"].append(_routing_block(routing))
         messages[-1]["content"].extend(blocks)
+    # Only attachments routed to the execution worker cross this boundary.  This
+    # prevents a tool-use request (including one induced by attachment content)
+    # from handing direct model inputs to the worker unnecessarily.
+    worker_attachments = [
+        attachment
+        for attachment, route in zip(attachments or [], routing if attachments else [])
+        if route["component"] == "execution-worker"
+    ]
+    submitted_worker_job: dict[str, Any] | None = None
     tool_events: list[dict[str, Any]] = []
 
     for _ in range(MAX_TOOL_ROUNDS):
@@ -545,14 +554,22 @@ def converse(
         for tool_use in tool_uses:
             name = tool_use.get("name", "unknown")
             try:
-                output = _run_tool(
-                    lambda_client,
-                    control_function_name,
-                    name,
-                    tool_use.get("input", {}),
-                    conversation_id=conversation_id,
-                    attachments=attachments,
-                )
+                # A model can emit one execute_task use per attachment.  A single
+                # conversation request is the idempotency boundary for worker-routed
+                # files: submit once, then return the same durable job to later uses.
+                if name == "execute_task" and worker_attachments and submitted_worker_job is not None:
+                    output = {**submitted_worker_job, "reused_for_request": True}
+                else:
+                    output = _run_tool(
+                        lambda_client,
+                        control_function_name,
+                        name,
+                        tool_use.get("input", {}),
+                        conversation_id=conversation_id,
+                        attachments=worker_attachments if name == "execute_task" else None,
+                    )
+                    if name == "execute_task" and worker_attachments:
+                        submitted_worker_job = output
                 status = "success"
             except Exception as exc:
                 output = {"error": str(exc)[:1000]}

@@ -21,7 +21,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 
 ## Release queue
 
-| Release | Outcome | Included enhancements | Status | Deployed commit |
+| Release | Outcome | Included enhancements | Status | Functional revision |
 | --- | --- | --- | --- | --- |
 | Upload experience v2 | Faster, inspectable uploads that survive conversation navigation safely | IGOR-001, IGOR-002, IGOR-003, IGOR-004, IGOR-005 | PROPOSED | — |
 | Multimodal conversations v1 | Understand the operator's screenshots, images, PDFs, and uploaded files | IGOR-006 | RELEASED | `f6b26240103826f9392b14ef02c4a576df208b44` |
@@ -117,11 +117,16 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 - Candidate release: Multimodal conversations v1
 - Comparison capability: Read screenshots, images, PDFs, and uploaded files
   directly.
-- Released behavior: Small supported images and documents are loaded from private
-  S3 into the current Bedrock request. Large and unsupported files are passed by
-  private S3 location to the execution worker. The deployed `igor` stack was
-  independently read on 2026-09-06 as `UPDATE_COMPLETE` with SourceRevision
-  `f6b26240103826f9392b14ef02c4a576df208b44`.
+- Released behavior: Small supported images are loaded from private S3 into the
+  current Bedrock request. Documents, large images, and unsupported files are
+  routed by private S3 location to the execution worker; they are not sent
+  directly to Bedrock. Functional revision
+  `f6b26240103826f9392b14ef02c4a576df208b44` was verified for this behavior.
+  Subsequently, evidence-record revision
+  `66d080d4a6bd45750a2182ba48d8a34f3714ca61` was deployed to the existing
+  `igor` stack to record the matrix evidence. The latter is a ledger/evidence
+  revision, not the functional revision. This avoids treating a release record's
+  own deployment as new functional evidence.
 - Intended outcome: The operator can attach a supported file and receive an
   answer grounded in its actual contents, regardless of whether the conversation
   model or worker performs the inspection.

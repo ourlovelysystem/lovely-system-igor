@@ -217,6 +217,21 @@ GENERAL_TOOL_CONFIG = {
                                 "type": "array",
                                 "items": {"type": "string"},
                             },
+                            "attachment_results": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "attachment_id": {"type": "string"},
+                                        "filename": {"type": "string"},
+                                        "status": {"type": "string", "enum": ["inspected", "unsupported", "corrupt", "unavailable"]},
+                                        "result": {"type": "string"},
+                                        "evidence_command_ids": {"type": "array", "items": {"type": "string"}},
+                                    },
+                                    "required": ["attachment_id", "filename", "status", "result", "evidence_command_ids"],
+                                    "additionalProperties": False,
+                                },
+                            },
                         },
                         "required": [
                             "status",
@@ -851,6 +866,7 @@ evidence ran out. A model statement is never proof."""
         finish: Any,
         commands: list[dict[str, Any]],
         objective: str = "",
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(finish, dict):
             raise ValueError("finish_task input must be an object")
@@ -891,6 +907,22 @@ evidence ran out. A model statement is never proof."""
                 raise ValueError("deployment source_revision must be a full 40-character SHA")
         if not isinstance(finish.get("changes_made"), bool):
             raise ValueError("finish_task changes_made must be boolean")
+        attachment_results = finish.get("attachment_results", [])
+        if not isinstance(attachment_results, list):
+            raise ValueError("finish_task attachment_results must be an array")
+        expected_attachments = attachments or []
+        expected_ids = {str(attachment.get("attachment_id", "")) for attachment in expected_attachments}
+        result_ids: set[str] = set()
+        for result in attachment_results:
+            if not isinstance(result, dict) or set(result) != {"attachment_id", "filename", "status", "result", "evidence_command_ids"}:
+                raise ValueError("every attachment result requires id, filename, status, result, and evidence command IDs")
+            if (not isinstance(result["attachment_id"], str) or not isinstance(result["filename"], str)
+                    or not isinstance(result["result"], str) or result["status"] not in {"inspected", "unsupported", "corrupt", "unavailable"}
+                    or not isinstance(result["evidence_command_ids"], list) or not all(isinstance(value, str) for value in result["evidence_command_ids"])):
+                raise ValueError("attachment result values are invalid")
+            result_ids.add(result["attachment_id"])
+        if expected_ids and result_ids != expected_ids:
+            raise ValueError("finish_task attachment_results must map every supplied attachment exactly once")
 
         by_id = {command["command_id"]: (index, command) for index, command in enumerate(commands)}
         cited: list[tuple[int, dict[str, Any]]] = []
@@ -1143,7 +1175,7 @@ evidence ran out. A model statement is never proof."""
                         )
                     elif name == "finish_task":
                         finish_request = self._validate_finish(
-                            tool_use.get("input"), commands, objective
+                            tool_use.get("input"), commands, objective, item.get("attachments") or []
                         )
                         finish_tool_use_id = tool_use_id
                         output = {"accepted": True, "status": finish_request["status"]}
@@ -1222,6 +1254,7 @@ evidence ran out. A model statement is never proof."""
                         "published_revisions": finish_request["published_revisions"],
                         "deployment_claims": finish_request["deployment_claims"],
                         "limitations": finish_request["limitations"],
+                        "attachment_results": finish_request.get("attachment_results", []),
                         "evidence_command_ids": finish_request["evidence_command_ids"],
                         "commands": commands,
                         "agent_notes": visible_reasoning,

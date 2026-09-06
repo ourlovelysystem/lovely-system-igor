@@ -752,3 +752,23 @@ class GitRecoveryAcceptanceTests(unittest.TestCase):
             self.assertEqual("preserve this uncommitted file\n", (recovered / "safe-notes.txt").read_text())
             self.assertFalse((recovered / "ignored.txt").exists())
             self.assertFalse((recovered / ".env").exists())
+
+class AttachmentEvidenceRegressionTests(unittest.TestCase):
+    def test_finish_rejects_missing_or_incomplete_attachment_result_mapping(self):
+        commands = [{"command_id": "cmd-001", "category": "inspect", "exit_code": 0}]
+        finish = {
+            "status": "WORKING", "summary": "Inspected attachments.", "changes_made": False,
+            "evidence_command_ids": ["cmd-001"], "resources": [], "public_endpoints": [],
+            "published_revisions": [], "deployment_claims": [], "limitations": [],
+        }
+        attachments = [
+            {"attachment_id": "one", "filename": "one.txt"},
+            {"attachment_id": "two", "filename": "two.txt"},
+        ]
+        with self.assertRaisesRegex(ValueError, "map every supplied attachment"):
+            runner.Worker._validate_finish(finish, commands, attachments=attachments)
+        finish["attachment_results"] = [
+            {"attachment_id": "one", "filename": "one.txt", "status": "inspected", "result": "OK", "evidence_command_ids": ["cmd-001"]},
+            {"attachment_id": "two", "filename": "two.txt", "status": "corrupt", "result": "Malformed input", "evidence_command_ids": ["cmd-001"]},
+        ]
+        self.assertEqual(finish, runner.Worker._validate_finish(finish, commands, attachments=attachments))

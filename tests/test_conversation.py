@@ -374,3 +374,31 @@ class UploadEnhancementTests(ConversationTests):
         self.assertEqual(200, result["statusCode"])
         self.s3.abort_multipart_upload.assert_called_once()
         self.assertEqual("CANCELLED", self.table.update_item.call_args.kwargs["ExpressionAttributeValues"][":cancelled"])
+
+class WorkerAttachmentDeduplicationTests(ConversationTests):
+    def test_many_worker_attachments_submit_one_job_and_exclude_direct_model_attachment(self):
+        worker_files = [
+            {"attachment_id": f"file-{n}", "filename": f"report-{n}.pdf", "content_type": "application/pdf", "size": 10,
+             "s3_uri": f"s3://igor/attachments/operator/abc/file-{n}/report-{n}.pdf", "s3_key": f"attachments/operator/abc/file-{n}/report-{n}.pdf"}
+            for n in range(5)
+        ]
+        direct_image = {"attachment_id": "image", "filename": "direct.png", "content_type": "image/png", "size": 8,
+                        "s3_uri": "s3://igor/attachments/operator/abc/image/direct.png", "s3_key": "attachments/operator/abc/image/direct.png"}
+        self.s3.get_object.return_value = {"Body": io.BytesIO(b"\x89PNG\r\n\x1a\n")}
+        self.table.query.return_value = {"Items": [{"role": "user", "content_json": '[{"text":"Inspect all files"}]'}]}
+        uses = [{"toolUse": {"toolUseId": f"use-{n}", "name": "execute_task", "input": {"objective": "Inspect all attached files."}}} for n in range(5)]
+        self.bedrock.converse.side_effect = [
+            {"output": {"message": {"role": "assistant", "content": uses}}},
+            {"output": {"message": {"role": "assistant", "content": [{"text": "One job is queued."}]}}},
+        ]
+        self.lambda_client.invoke.return_value = {"Payload": io.BytesIO(json.dumps({"statusCode": 202, "body": json.dumps({"job_id": "job-one", "status": "QUEUED"})}).encode())}
+
+        result = conversation.converse(table=self.table, bedrock=self.bedrock, lambda_client=self.lambda_client,
+            control_function_name="igor-control", model_id="model", conversation_id="abc", attachments=worker_files + [direct_image], s3=self.s3, attachments_bucket="igor")
+
+        self.assertEqual("One job is queued.", result["text"])
+        self.lambda_client.invoke.assert_called_once()
+        body = json.loads(json.loads(self.lambda_client.invoke.call_args.kwargs["Payload"])["body"])
+        self.assertEqual([file["attachment_id"] for file in worker_files], [file["attachment_id"] for file in body["attachments"]])
+        self.assertTrue(all(event["result"].get("job_id") == "job-one" for event in result["tool_events"]))
+        self.assertTrue(all(event["result"].get("reused_for_request") for event in result["tool_events"][1:]))
