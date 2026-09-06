@@ -16,10 +16,17 @@ def _secret(client: Any, name: str) -> dict[str, Any]:
     value=json.loads(raw)
     if not isinstance(value,dict): raise ValueError("telephone secret must be an object")
     return value
+def _canonical_phone(value: Any) -> str:
+    """Compare telephone identities in E.164 form without persisting them."""
+    digits = re.sub(r"\D", "", str(value))
+    # Chime supplies E.164. Accept harmless punctuation/spacing differences in the
+    # runtime allowlist, but never broaden the comparison beyond the full number.
+    return "+" + digits if digits else ""
 def _allowed(secret: dict[str,Any], caller: str) -> bool:
     values=secret.get("allowlist", secret.get("caller_allowlist", []))
     if isinstance(values,str): values=[values]
-    return isinstance(values,list) and any(hmac.compare_digest(str(x), caller) for x in values)
+    candidate=_canonical_phone(caller)
+    return bool(candidate) and isinstance(values,list) and any(hmac.compare_digest(_canonical_phone(x), candidate) for x in values)
 def _pin_ok(secret: dict[str,Any], digits: str) -> bool:
     return isinstance(secret.get("pin"),str) and hmac.compare_digest(secret["pin"],digits)
 def _put_call(table:Any, call_id:str, **values:Any):
@@ -42,6 +49,11 @@ def chime(event:dict[str,Any], table:Any, secrets:Any, bot_alias_arn:str, secret
     try: authorized=_allowed(_secret(secrets,secret_name),caller)
     except Exception: authorized=False
     if not authorized: return {"Actions":[{"Type":"Speak","Parameters":{"Text":"This number is not authorized. Goodbye."}},{"Type":"Hangup","Parameters":{}}]}
+    # StartBotConversation requires a real Lex V2 alias ARN. Returning it with an
+    # empty endpoint causes Chime to terminate the call instead of playing a prompt.
+    # Fail closed with valid PSTN actions until the bot is provisioned.
+    if not bot_alias_arn.strip():
+        return {"Actions":[{"Type":"Speak","Parameters":{"Text":"Telephone service is not configured. Goodbye."}},{"Type":"Hangup","Parameters":{}}]}
     _put_call(table,call_id,authentication="PIN_REQUIRED",caller_hash=safe_id(caller),raw_audio_retained=False)
     return {"Actions":[{"Type":"StartBotConversation","Parameters":{"BotAliasArn":bot_alias_arn,"LocaleId":"en_US","SessionAttributes":{"call_id":call_id}}}]}
 def lex(event:dict[str,Any], table:Any, secrets:Any, lam:Any, conversation_fn:str, control_fn:str, secret_name:str)->dict[str,Any]:

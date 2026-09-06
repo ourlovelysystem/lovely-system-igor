@@ -23,3 +23,13 @@ class TelephoneTests(unittest.TestCase):
   self.assertIn('repeat',out['messages'][0]['content']); self.lam.invoke.assert_not_called()
   out=telephone.lex({'inputTranscript':'no','sessionState':{'sessionAttributes':{'call_id':'c'}}},self.table,self.secret,self.lam,'conversation','control','secret')
   self.assertIn('No job',out['messages'][0]['content']); self.lam.invoke.assert_not_called()
+
+ def test_canonical_caller_match_tolerates_punctuation_without_retaining_caller(self):
+  self.secret.get_secret_value.return_value={"SecretString":'{"allowlist":["+1 (555) 000-0001"],"pin":"2468"}'}
+  out=telephone.chime({'CallDetails':{'TransactionId':'c','Participants':[{'From':'+15550000001'}]}},self.table,self.secret,'bot','secret')
+  self.assertEqual('StartBotConversation',out['Actions'][0]['Type'])
+  self.assertNotIn('15550000001',str(self.table.mock_calls))
+ def test_missing_lex_alias_returns_valid_terminal_pstn_actions_without_call_record(self):
+  out=telephone.chime({'CallDetails':{'TransactionId':'c','Participants':[{'From':'+15550000001'}]}},self.table,self.secret,'','secret')
+  self.assertEqual(['Speak','Hangup'],[a['Type'] for a in out['Actions']])
+  self.table.put_item.assert_not_called()

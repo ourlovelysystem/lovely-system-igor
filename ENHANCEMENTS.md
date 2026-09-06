@@ -547,3 +547,11 @@ Copy this block and use the next identifier:
 - Acceptance evidence:
   -
 ```
+
+#### IGOR-018 live defect record — 2026-09-06
+
+- Status: `IN PROGRESS` (not `RELEASED`).
+- Failed live test: an authorized operator handset placed a real inbound call immediately before this record. The caller received a busy signal; no greeting or PIN prompt was heard. No caller identity, PIN, credentials, or secret values are retained here.
+- Investigation evidence: the acquired number is assigned to SIP rule `9efea76b-5d6b-41fe-a154-120dddc890b8`, which is enabled and targets SMA `97842c79-2385-4829-8154-833226d6eb59` in `us-east-1`; that SMA endpoint is the deployed voice-adapter Lambda. The adapter had three successful, non-error invocations in the immediate call window, each retrieving its runtime secret, but created no non-sensitive call-ledger row. The first failed transition is therefore the adapter's authorization/PIN-entry transition, before a PIN prompt or conversation was created. The original comparison required an exact caller-string representation.
+- A second blocking configuration defect was also found: the deployed `LEX_BOT_ALIAS_ARN` was empty and the account had no Lex V2 bot. An authorized call that passed the original strict comparison would have returned `StartBotConversation` with an empty alias, which is not a valid usable PSTN handoff. The remediation canonicalizes only in-memory caller comparison (without persistence) and returns valid Speak/Hangup actions rather than an invalid bot action while the required Lex bot remains unprovisioned.
+- Non-physical verification and remediation evidence are recorded with the deployment/test evidence for the follow-up commit. A new physical call is required after a valid Lex V2 bot alias is configured; this record does not claim that call passed.
