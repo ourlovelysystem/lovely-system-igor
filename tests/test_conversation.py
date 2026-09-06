@@ -264,6 +264,13 @@ class ConversationTests(unittest.TestCase):
         self.assertIn("not a direct image", routing[0]["reason"])
         self.s3.get_object.assert_not_called()
 
+    def test_gif89a_is_accepted_as_a_valid_common_image_format(self):
+        attachment = {"filename": "animation.gif", "content_type": "image/gif", "size": 6, "s3_key": "attachments/x"}
+        self.s3.get_object.return_value = {"Body": io.BytesIO(b"GIF89a")}
+        blocks, routing = conversation._model_attachment_blocks(self.s3, "igor", [attachment])
+        self.assertEqual("conversation-model", routing[0]["component"])
+        self.assertEqual("gif", blocks[0]["image"]["format"])
+
     def test_mismatched_image_signature_is_routed_to_worker_without_model_bytes(self):
         attachment = {"filename": "renamed.png", "content_type": "image/png", "size": 3, "s3_key": "attachments/x"}
         self.s3.get_object.return_value = {"Body": io.BytesIO(b"bad")}

@@ -370,11 +370,13 @@ def _attachment_content(text: str, attachments: list[dict[str, Any]]) -> list[di
 def _image_signature_is_valid(fmt: str, body: bytes) -> bool:
     """Reject obvious renamed/corrupt images before invoking the conversational model."""
     signatures = {
-        "png": b"\x89PNG\r\n\x1a\n", "jpeg": b"\xff\xd8\xff", "gif": b"GIF87a",
+        "png": b"\x89PNG\r\n\x1a\n", "jpeg": b"\xff\xd8\xff", "gif": b"GIF",
         "webp": b"RIFF",
     }
     if not body.startswith(signatures[fmt]):
         return False
+    if fmt == "gif":
+        return len(body) >= 6 and body[:6] in {b"GIF87a", b"GIF89a"}
     return fmt != "webp" or len(body) >= 12 and body[8:12] == b"WEBP"
 
 
