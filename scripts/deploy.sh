@@ -10,7 +10,49 @@ region="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 model_id="${IGOR_MODEL_ID:-global.openai.gpt-5.6-terra}"
 source_repository="${IGOR_SOURCE_REPOSITORY:-https://github.com/ourlovelysystem/lovely-system-igor.git}"
 source_revision="${IGOR_SOURCE_REVISION:-$(git rev-parse HEAD 2>/dev/null || echo main)}"
-github_token_secret_name="${IGOR_GITHUB_TOKEN_SECRET_NAME:-}"
+github_token_secret_name=""
+github_token_parameter=()
+
+# An omitted credential setting must not clear an existing integration.  Read only
+# the Secrets Manager *name* from CloudFormation; never retrieve the secret.
+if [[ -v IGOR_GITHUB_TOKEN_SECRET_NAME ]]; then
+  github_token_secret_name="$IGOR_GITHUB_TOKEN_SECRET_NAME"
+  github_token_parameter=("GitHubTokenSecretName=$github_token_secret_name")
+else
+  existing_stack_id=""
+  if ! existing_stack_id="$(aws cloudformation describe-stacks \
+    --stack-name "$stack_name" \
+    --region "$region" \
+    --query 'Stacks[0].StackId' \
+    --output text 2>/tmp/igor-deploy-stack-lookup.err)"; then
+    lookup_error="$(cat /tmp/igor-deploy-stack-lookup.err)"
+    rm -f /tmp/igor-deploy-stack-lookup.err
+    if grep -Eqi "does not exist|doesn't exist" <<<"$lookup_error"; then
+      existing_stack_id=""
+    else
+      echo "Unable to determine whether stack $stack_name exists; refusing to deploy." >&2
+      exit 1
+    fi
+  else
+    rm -f /tmp/igor-deploy-stack-lookup.err
+  fi
+
+  if [[ -n "$existing_stack_id" && "$existing_stack_id" != "None" ]]; then
+    if ! github_token_secret_name="$(aws cloudformation describe-stacks \
+      --stack-name "$stack_name" \
+      --region "$region" \
+      --query 'Stacks[0].Parameters[?ParameterKey==`GitHubTokenSecretName`].ParameterValue | [0]' \
+      --output text)"; then
+      echo "Unable to read the existing GitHubTokenSecretName parameter; refusing to deploy." >&2
+      exit 1
+    fi
+    if [[ -z "$github_token_secret_name" || "$github_token_secret_name" == "None" ]]; then
+      echo "Existing stack has no readable GitHubTokenSecretName parameter; refusing to deploy." >&2
+      exit 1
+    fi
+    github_token_parameter=("GitHubTokenSecretName=$github_token_secret_name")
+  fi
+fi
 
 command -v aws >/dev/null || { echo "AWS CLI is required" >&2; exit 1; }
 command -v sam >/dev/null || { echo "AWS SAM CLI is required" >&2; exit 1; }
@@ -27,7 +69,7 @@ sam deploy \
     "DefaultModelId=$model_id" \
     "SourceRepository=$source_repository" \
     "SourceRevision=$source_revision" \
-    "GitHubTokenSecretName=$github_token_secret_name"
+    "${github_token_parameter[@]}"
 
 igor_url="$(aws cloudformation describe-stacks \
   --stack-name "$stack_name" \

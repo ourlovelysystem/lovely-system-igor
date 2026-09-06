@@ -109,6 +109,11 @@ must change files under `.github/workflows`. Store and deploy the token with:
 IGOR_GITHUB_TOKEN_SECRET_NAME=igor/github-token ./scripts/deploy.sh
 ```
 
+On an existing `igor` stack, omitting `IGOR_GITHUB_TOKEN_SECRET_NAME` preserves
+its configured Secrets Manager secret name. To change it, set the variable
+explicitly. A new stack with the variable omitted uses the documented empty
+(no-GitHub-credential) default.
+
 The setup script prompts for the token without placing it in shell history. The
 worker retrieves it from AWS Secrets Manager only when Git asks for credentials;
 it is not embedded in the repository URL or persisted in the workspace archive.
