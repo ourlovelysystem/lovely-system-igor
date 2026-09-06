@@ -533,6 +533,39 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
   - Raw call audio is not stored, and logs/evidence contain no PIN, credential,
     secret value, or full sensitive prompt content.
 
+
+#### IGOR-018 live defect record — 2026-09-06
+
+- Status: `IN PROGRESS` (not `RELEASED`).
+- Failed live test: an authorized operator handset placed a real inbound call immediately before this record. The caller received a busy signal; no greeting or PIN prompt was heard. No caller identity, PIN, credentials, or secret values are retained here.
+- Investigation evidence: the acquired number is assigned to SIP rule `9efea76b-5d6b-41fe-a154-120dddc890b8`, which is enabled and targets SMA `97842c79-2385-4829-8154-833226d6eb59` in `us-east-1`; that SMA endpoint is the deployed voice-adapter Lambda. The adapter had three successful, non-error invocations in the immediate call window, each retrieving its runtime secret, but created no non-sensitive call-ledger row. The first failed transition is therefore the adapter's authorization/PIN-entry transition, before a PIN prompt or conversation was created. The original comparison required an exact caller-string representation.
+- A second blocking configuration defect was also found: the deployed `LEX_BOT_ALIAS_ARN` was empty and the account had no Lex V2 bot. The prior adapter incorrectly attempted Lex before DTMF authentication and returned a non-Lex-compliant fulfillment shape. This correction makes Chime greet and collect DTMF first, creates the shared Igor conversation only after authentication, then starts a nonempty active Lex alias; Lex is solely a speech transport and its Lambda fulfillment invokes the existing Igor conversation/control functions. The allowlist and PIN remain runtime-only Secrets Manager values and are never persisted.
+- Non-physical verification and remediation evidence are recorded with the deployment/test evidence for the follow-up commit. A new physical call is required after a valid Lex V2 bot alias is configured; this record does not claim that call passed.
+
+- Classification: This is a defect correction within IGOR-018, not a new
+  enhancement. Lex V2 was already a mandatory component of the recorded
+  implementation boundary.
+- Root cause: implementation did not produce a complete
+  requirement-to-resource dependency map; deployment permitted telephone mode
+  with an empty Lex alias; verification treated the existence of the number,
+  rule, media application, and Lambda as proof that the end-to-end capability
+  was ready.
+- Permanent readiness gate:
+  - When telephone mode is enabled, deployment and readiness verification must
+    fail unless the Lex bot exists, its locale is built, a version is published,
+    an active alias exists, the nonempty alias ARN is configured on the adapter,
+    and all Chime/Lex/Lambda invocation permissions are independently verified.
+  - Igor must distinguish `DEPLOYED`, `OPERATIONAL`,
+    `READY FOR PHYSICAL TEST`, and `RELEASED`; no earlier state implies a
+    later one.
+  - A synthetic test must traverse inbound event, greeting, PIN collection,
+    authentication, Lex start, recognized utterance, existing Igor conversation,
+    and audible-response action before Igor asks the operator to call.
+  - A physical call confirms the machine-verified path. It must not be used to
+    discover that a mandatory component was omitted.
+  - Readiness claims must cite evidence for every required transition; missing
+    evidence blocks the claim.
+
 ## Adding an enhancement
 
 Copy this block and use the next identifier:
@@ -547,11 +580,3 @@ Copy this block and use the next identifier:
 - Acceptance evidence:
   -
 ```
-
-#### IGOR-018 live defect record — 2026-09-06
-
-- Status: `IN PROGRESS` (not `RELEASED`).
-- Failed live test: an authorized operator handset placed a real inbound call immediately before this record. The caller received a busy signal; no greeting or PIN prompt was heard. No caller identity, PIN, credentials, or secret values are retained here.
-- Investigation evidence: the acquired number is assigned to SIP rule `9efea76b-5d6b-41fe-a154-120dddc890b8`, which is enabled and targets SMA `97842c79-2385-4829-8154-833226d6eb59` in `us-east-1`; that SMA endpoint is the deployed voice-adapter Lambda. The adapter had three successful, non-error invocations in the immediate call window, each retrieving its runtime secret, but created no non-sensitive call-ledger row. The first failed transition is therefore the adapter's authorization/PIN-entry transition, before a PIN prompt or conversation was created. The original comparison required an exact caller-string representation.
-- A second blocking configuration defect was also found: the deployed `LEX_BOT_ALIAS_ARN` was empty and the account had no Lex V2 bot. The prior adapter incorrectly attempted Lex before DTMF authentication and returned a non-Lex-compliant fulfillment shape. This correction makes Chime greet and collect DTMF first, creates the shared Igor conversation only after authentication, then starts a nonempty active Lex alias; Lex is solely a speech transport and its Lambda fulfillment invokes the existing Igor conversation/control functions. The allowlist and PIN remain runtime-only Secrets Manager values and are never persisted.
-- Non-physical verification and remediation evidence are recorded with the deployment/test evidence for the follow-up commit. A new physical call is required after a valid Lex V2 bot alias is configured; this record does not claim that call passed.
