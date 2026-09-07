@@ -64,6 +64,21 @@ else
   fi
 fi
 
+# The reference-compatible voice role is scoped to the exact existing PIN secret
+# ARN. Resolve metadata only; do not read, rotate, copy, or print its value.
+telephone_auth_secret_name="${IGOR_TELEPHONE_AUTH_SECRET_NAME:-}"
+if [[ -z "$telephone_auth_secret_name" ]]; then
+  telephone_auth_secret_name="$(aws cloudformation describe-stacks \
+    --stack-name "$stack_name" --region "$region" \
+    --query 'Stacks[0].Parameters[?ParameterKey==`TelephoneAuthSecretName`].ParameterValue | [0]' --output text)"
+fi
+[[ "$telephone_auth_secret_name" != "None" && -n "$telephone_auth_secret_name" ]] || { echo "TelephoneAuthSecretName is required; refusing to deploy." >&2; exit 1; }
+telephone_auth_secret_arn="${IGOR_TELEPHONE_AUTH_SECRET_ARN:-}"
+if [[ -z "$telephone_auth_secret_arn" ]]; then
+  telephone_auth_secret_arn="$(aws secretsmanager describe-secret --secret-id "$telephone_auth_secret_name" --region "$region" --query ARN --output text)"
+fi
+[[ "$telephone_auth_secret_arn" != "None" && -n "$telephone_auth_secret_arn" ]] || { echo "TelephoneAuthSecretArn is required; refusing to deploy." >&2; exit 1; }
+
 sam build
 sam deploy \
   --stack-name "$stack_name" \
@@ -76,6 +91,8 @@ sam deploy \
     "DefaultModelId=$model_id" \
     "SourceRepository=$source_repository" \
     "SourceRevision=$source_revision" \
+    "TelephoneAuthSecretName=$telephone_auth_secret_name" \
+    "TelephoneAuthSecretArn=$telephone_auth_secret_arn" \
     "${github_token_parameter[@]}"
 
 # The bounded diagnostic WAV is uploaded only after CloudFormation creates its private bucket and Chime policy.

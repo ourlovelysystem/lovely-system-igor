@@ -20,6 +20,9 @@ Parameters:
     Type: String
     Default: igor/telephone-auth
     Description: Runtime-only caller allowlist and PIN secret name
+  TelephoneAuthSecretArn:
+    Type: String
+    Description: Exact ARN of the existing runtime-only caller allowlist and PIN secret (never its value)
   TelephoneLexBotAliasArn:
     Type: String
     Default: ""
@@ -515,7 +518,7 @@ Resources:
                 Resource: [!GetAtt TelephoneCallsTable.Arn, !Sub "${TelephoneCallsTable.Arn}/index/MeetingIdIndex"]
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
-                Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${TelephoneAuthSecretName}-*
+                Resource: !Ref TelephoneAuthSecretArn
   ReferenceCompatibleVoiceFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -526,6 +529,12 @@ Resources:
       Architectures: [arm64]
       Timeout: 30
       Role: !GetAtt ReferenceCompatibleVoiceRole.Arn
+      Environment:
+        Variables:
+          TELEPHONE_AUTH_SECRET_NAME: !Ref TelephoneAuthSecretName
+          TELEPHONE_CALLS_TABLE: !Ref TelephoneCallsTable
+          CONTROL_FUNCTION_NAME: !Ref ControlFunction
+          CONVERSATION_FUNCTION_NAME: !Ref ConversationFunction
   ReferenceCompatibleIgorBridgeFunction:
     Type: AWS::Serverless::Function
     Properties:

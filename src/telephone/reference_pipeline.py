@@ -8,6 +8,7 @@ MAX_PIN_ATTEMPTS=3; ASSERTION_SECONDS=900; CONFIRM_SECONDS=300
 MUTATING=re.compile(r"\b(create|delete|remove|update|change|deploy|publish|push|commit|write|put|terminate|start|stop|infrastructure|code)\b",re.I)
 CONFIRM=re.compile(r"^\s*(confirm|yes|one)\s*[.!]?\s*$",re.I)
 DENY=re.compile(r"\b(no|cancel|deny|zero)\b",re.I)
+REQUIRED_RUNTIME_ENV=("TELEPHONE_AUTH_SECRET_NAME","TELEPHONE_CALLS_TABLE","CONTROL_FUNCTION_NAME","CONVERSATION_FUNCTION_NAME")
 def _opaque(v:str)->str:return hashlib.sha256(v.encode()).hexdigest()[:32]
 def _action(t:str,p:dict[str,Any])->dict[str,Any]:return {"Type":t,"Parameters":p}
 def _response(a:list[dict[str,Any]],x:dict[str,str])->dict[str,Any]:return {"SchemaVersion":"1.0","Actions":a,"TransactionAttributes":x}
@@ -22,6 +23,9 @@ def _prompt(call_id:str,retry=False)->dict[str,Any]:
  text="PIN was not accepted. Enter your PIN followed by pound." if retry else "Welcome to Igor. Enter your PIN followed by pound."
  return _response([_action("SpeakAndGetDigits",{"CallId":call_id,"SpeechParameters":{"Text":text},"InputDigitsRegex":"^[0-9]{1,32}#$","TerminatorDigits":["#"],"TimeoutInSeconds":15,"InBetweenDigitsTimeoutInMillis":5000})],{})
 def _secret(c:Any)->dict[str,Any]:return json.loads(c.get_secret_value(SecretId=os.environ["TELEPHONE_AUTH_SECRET_NAME"])["SecretString"])
+def _configured()->bool:return all(os.environ.get(name) for name in REQUIRED_RUNTIME_ENV)
+def _configuration_failure(event:dict[str,Any],attrs:dict[str,str])->dict[str,Any]:
+ return _response([_speak("Telephone service configuration is unavailable.",_leg(event,"LEG-A")),_action("Hangup",{"SipResponseCode":"0","CallId":_leg(event,"LEG-A")})],attrs)
 def _assertion(call_id:str,conversation_id:str,pin:str)->str:
  raw=json.dumps({"v":1,"call_id":call_id,"conversation_id":conversation_id,"exp":int(time.time()+ASSERTION_SECONDS)},sort_keys=True,separators=(",", ":")).encode()
  return base64.urlsafe_b64encode(raw).decode().rstrip("=")+"."+hmac.new(pin.encode(),raw,hashlib.sha256).hexdigest()
@@ -30,6 +34,7 @@ def _link(table:Any,meeting:str)->dict[str,Any]:
  r=table.query(IndexName="MeetingIdIndex",KeyConditionExpression="meeting_id = :m",ExpressionAttributeValues={":m":meeting},ConsistentRead=False);return (r.get("Items")or[{}])[0]
 def handler(event:dict[str,Any],context:Any,meetings:Any=None,table:Any=None,secrets:Any=None)->dict[str,Any]:
  typ=event.get("InvocationEventType"); attrs=_attrs(event); tx=str((event.get("CallDetails")or{}).get("TransactionId")or""); call_id=_opaque(tx); leg=_leg(event,"LEG-A")
+ if not _configured():return _configuration_failure(event,attrs)
  table=table or __import__('boto3').resource('dynamodb').Table(os.environ['TELEPHONE_CALLS_TABLE']); secrets=secrets or __import__('boto3').client('secretsmanager')
  if typ=="NEW_INBOUND_CALL":
   try: enabled=_secret(secrets).get("allow_any_caller") is True
@@ -49,6 +54,7 @@ def handler(event:dict[str,Any],context:Any,meetings:Any=None,table:Any=None,sec
  if typ=="CALL_UPDATE_REQUESTED" and ((event.get("ActionData")or{}).get("Parameters")or{}).get("Arguments",{}).get("Function")=="Response":return _response([_speak(str(((event.get('ActionData')or{}).get('Parameters')or{}).get('Arguments',{}).get('Text')or'Execution service is unavailable.'),attrs['CallIdLegA'])],attrs)
  return _response([],attrs)
 def bridge(event:dict[str,Any],context:Any,lam:Any=None,table:Any=None)->dict[str,Any]:
+ if not _configured():return {"conversation_id":"","response":"Telephone service configuration is unavailable."}
  transcript=str(event.get('transcript')or'').strip(); meeting=str(event.get('meeting_id')or''); table=table or __import__('boto3').resource('dynamodb').Table(os.environ['TELEPHONE_CALLS_TABLE']); call=_link(table,meeting)
  if not transcript or call.get('authentication')!='AUTHENTICATED' or int(call.get('assertion_expires_at',0))<time.time():return {"conversation_id":call.get('conversation_id',''),"response":"Authentication is required before execution tools are available."}
  conv=call['conversation_id']; client=lam or __import__('boto3').client('lambda')
