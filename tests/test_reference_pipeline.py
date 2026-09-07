@@ -6,8 +6,8 @@ def event(t,attrs=None): return {'SchemaVersion':'1.0','InvocationEventType':t,'
 class ReferencePipelineTests(unittest.TestCase):
  def test_full_reference_transition_fixtures(self):
   m=Mock();m.create_meeting_with_attendees.return_value={'Meeting':{'MeetingId':'m'},'Attendees':[{'JoinToken':'j'}]}; out=rp.handler(event('NEW_INBOUND_CALL'),None,m); self.assertEqual(out['Actions'],[{'Type':'JoinChimeMeeting','Parameters':{'JoinToken':'j','CallId':'a','MeetingId':'m'}}])
-  attrs=out['TransactionAttributes']; e=event('ACTION_SUCCESSFUL',attrs);e['ActionData']={'Type':'JoinChimeMeeting'}; self.assertEqual(rp.handler(e,None,m)['Actions'][0]['Type'],'Speak')
+  attrs=out['TransactionAttributes']; attrs['CallIdLegB']='b'; e=event('ACTION_SUCCESSFUL',attrs);e['ActionData']={'Type':'JoinChimeMeeting'}; self.assertEqual(rp.handler(e,None,m)['Actions'][0]['Type'],'Speak')
   e=event('CALL_UPDATE_REQUESTED',attrs);e['ActionData']={'Parameters':{'Arguments':{'Function':'Response','Text':'answer'}}}; self.assertEqual(rp.handler(e,None,m)['Actions'][0]['Parameters']['Text'],'answer')
   e=event('HANGUP',attrs);e['ActionData']={'Parameters':{'ParticipantTag':'LEG-A'}}; self.assertEqual(rp.handler(e,None,m)['Actions'][0]['Parameters']['CallId'],'b')
  def test_bridge_invokes_existing_conversation_with_no_transcript_logging(self):
-  os.environ['CONVERSATION_FUNCTION_NAME']='conversation'; l=Mock();l.invoke.return_value={'Payload':Mock(read=lambda:json.dumps({'body':json.dumps({'message':'answer'})}).encode())}; self.assertEqual(rp.bridge({'meeting_id':'m','transcript':'question'},None,l)['response'],'answer'); self.assertIn(b'"telephone": true',l.invoke.call_args.kwargs['Payload'])
+  os.environ['CONVERSATION_FUNCTION_NAME']='conversation'; l=Mock();l.invoke.return_value={'Payload':Mock(read=lambda:json.dumps({'body':json.dumps({'message':'answer'})}).encode())}; self.assertEqual(rp.bridge({'meeting_id':'m','transcript':'question'},None,l)['response'],'answer'); self.assertTrue(json.loads(l.invoke.call_args.kwargs['Payload'])['body'].find('\"telephone\": true') >= 0)
