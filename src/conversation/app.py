@@ -219,37 +219,135 @@ def _put_message(
 
 
 def _message_items(table: Any, conversation_id: str) -> list[dict[str, Any]]:
-    page = table.query(
-        KeyConditionExpression="conversation_id = :conversation_id AND begins_with(record_key, :prefix)",
-        ExpressionAttributeValues={":conversation_id": conversation_id, ":prefix": "MSG#"},
-        ScanIndexForward=False,
-        Limit=MAX_CONTEXT_MESSAGES,
-    )
-    return list(reversed(page.get("Items", [])))
+    """Read every persisted message page; truncation happens only after exchanges are paired."""
+    items: list[dict[str, Any]] = []
+    start_key: dict[str, Any] | None = None
+    while True:
+        request: dict[str, Any] = {
+            "KeyConditionExpression": "conversation_id = :conversation_id AND begins_with(record_key, :prefix)",
+            "ExpressionAttributeValues": {":conversation_id": conversation_id, ":prefix": "MSG#"},
+            "ScanIndexForward": True,
+        }
+        if start_key:
+            request["ExclusiveStartKey"] = start_key
+        page = table.query(**request)
+        items.extend(page.get("Items", []))
+        start_key = page.get("LastEvaluatedKey")
+        if not start_key:
+            return items
+
+
+def _model_content(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Releases before the byte-source fix persisted Bedrock s3Location blocks.
+    # Omit only that incompatible historical media block, never a tool block.
+    return [
+        block for block in content
+        if not (
+            isinstance(block, dict)
+            and isinstance(block.get("image") or block.get("document"), dict)
+            and "s3Location" in (block.get("image") or block.get("document"))["source"]
+        )
+    ]
+
+
+def _parsed_message_items(table: Any, conversation_id: str) -> list[dict[str, Any]]:
+    return [
+        {"role": item["role"], "content": _model_content(json.loads(item["content_json"], object_hook=_content_json_object_hook))}
+        for item in _message_items(table, conversation_id)
+    ]
+
+
+def _append_message(messages: list[dict[str, Any]], role: str, content: list[dict[str, Any]]) -> None:
+    if not content:
+        return
+    if messages and messages[-1]["role"] == role:
+        messages[-1]["content"].extend(content)
+    else:
+        messages.append({"role": role, "content": list(content)})
+
+
+def _reconstruct_messages(items: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Return atomic, role-valid Converse units from append-only durable records.
+
+    A tool result is located by ID rather than by its original record boundary, so a
+    later user turn cannot separate it from the assistant tool use. Duplicate results
+    retain the first durable result as the canonical response; later duplicates are not
+    sent because Bedrock permits one result per toolUseId.
+    """
+    results: dict[str, dict[str, Any]] = {}
+    for item in items:
+        for block in item["content"]:
+            result = block.get("toolResult") if isinstance(block, dict) else None
+            if isinstance(result, dict) and isinstance(result.get("toolUseId"), str):
+                results.setdefault(result["toolUseId"], block)
+    consumed: set[str] = set()
+    units: list[list[dict[str, Any]]] = []
+    for item in items:
+        role, content = item["role"], item["content"]
+        uses = [b["toolUse"]["toolUseId"] for b in content if isinstance(b, dict) and isinstance(b.get("toolUse"), dict) and isinstance(b["toolUse"].get("toolUseId"), str)]
+        if role == "assistant" and uses:
+            # An incomplete historical exchange is deliberately removed as a whole.
+            # handle() persists a truthful synthetic result before it accepts a turn.
+            if any(tool_use_id not in results for tool_use_id in uses):
+                continue
+            units.append([
+                {"role": "assistant", "content": list(content)},
+                {"role": "user", "content": [results[tool_use_id] for tool_use_id in uses]},
+            ])
+            consumed.update(uses)
+            continue
+        if role == "user":
+            content = [
+                block for block in content
+                if not (isinstance(block, dict) and isinstance(block.get("toolResult"), dict)
+                        and block["toolResult"].get("toolUseId") in consumed)
+            ]
+        if content:
+            units.append([{"role": role, "content": list(content)}])
+    return units
 
 
 def _load_messages(table: Any, conversation_id: str) -> list[dict[str, Any]]:
-    items = _message_items(table, conversation_id)
+    units = _reconstruct_messages(_parsed_message_items(table, conversation_id))
+    # Truncate whole units, never a tool use independently of its required result.
+    retained: list[list[dict[str, Any]]] = []
+    count = 0
+    for unit in reversed(units):
+        if count + len(unit) > MAX_CONTEXT_MESSAGES:
+            break
+        retained.append(unit)
+        count += len(unit)
     messages: list[dict[str, Any]] = []
-    for item in items:
-        content = json.loads(
-            item["content_json"],
-            object_hook=_content_json_object_hook,
-        )
-        # Releases before the byte-source fix persisted Bedrock s3Location
-        # blocks. The OpenAI model rejects those blocks, so retain the manifest
-        # text and omit only the incompatible historical media block.
-        content = [
-            block
-            for block in content
-            if not (
-                isinstance(block, dict)
-                and isinstance(block.get("image") or block.get("document"), dict)
-                and "s3Location" in (block.get("image") or block.get("document"))["source"]
-            )
-        ]
-        messages.append({"role": item["role"], "content": content})
+    for unit in reversed(retained):
+        for message in unit:
+            _append_message(messages, message["role"], message["content"])
     return messages
+
+
+def _reconcile_unsettled_tool_uses(table: Any, conversation_id: str) -> int:
+    """Durably close legacy interrupted tools before another operator turn is stored."""
+    items = _parsed_message_items(table, conversation_id)
+    results = {
+        block["toolResult"].get("toolUseId")
+        for item in items for block in item["content"]
+        if isinstance(block, dict) and isinstance(block.get("toolResult"), dict)
+    }
+    missing: list[str] = []
+    for item in items:
+        for block in item["content"]:
+            tool = block.get("toolUse") if isinstance(block, dict) else None
+            tool_use_id = tool.get("toolUseId") if isinstance(tool, dict) else None
+            if isinstance(tool_use_id, str) and tool_use_id not in results:
+                missing.append(tool_use_id)
+                results.add(tool_use_id)
+    if missing:
+        _put_message(table, conversation_id=conversation_id, role="user", content=[
+            {"toolResult": {"toolUseId": tool_use_id, "status": "error", "content": [{"json": {
+                "error": "Tool execution was interrupted before a result was recorded."
+            }}]}}
+            for tool_use_id in missing
+        ])
+    return len(missing)
 
 
 def _public_messages(table: Any, conversation_id: str) -> list[dict[str, Any]]:
@@ -883,6 +981,10 @@ def handle(
             if not text:
                 text = "Inspect the attached file or files."
 
+            # Do this before recording the new turn: legacy interrupted tools get a
+            # durable error result, and request reconstruction can never place a new
+            # user message ahead of an unsettled tool exchange.
+            _reconcile_unsettled_tool_uses(table, conversation_id)
             _put_message(
                 table,
                 conversation_id=conversation_id,

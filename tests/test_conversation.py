@@ -507,3 +507,105 @@ class WorkerAttachmentDeduplicationTests(ConversationTests):
         self.assertEqual([file["attachment_id"] for file in worker_files], [file["attachment_id"] for file in body["attachments"]])
         self.assertTrue(all(event["result"].get("job_id") == "job-one" for event in result["tool_events"]))
         self.assertTrue(all(event["result"].get("reused_for_request") for event in result["tool_events"][1:]))
+
+class ConverseHistorySerializationTests(unittest.TestCase):
+    @staticmethod
+    def item(role, blocks):
+        return {"role": role, "content": blocks}
+
+    @staticmethod
+    def tool_use(tool_use_id):
+        return {"toolUse": {"toolUseId": tool_use_id, "name": "get_job_status", "input": {"job_id": "x"}}}
+
+    @staticmethod
+    def tool_result(tool_use_id, status="success"):
+        return {"toolResult": {"toolUseId": tool_use_id, "status": status, "content": [{"json": {}}]}}
+
+    def assert_valid(self, messages):
+        pending = set()
+        previous = None
+        for message in messages:
+            self.assertNotEqual(previous, message["role"], "adjacent roles must be coalesced")
+            previous = message["role"]
+            for block in message["content"]:
+                if "toolUse" in block:
+                    self.assertEqual("assistant", message["role"])
+                    pending.add(block["toolUse"]["toolUseId"])
+                if "toolResult" in block:
+                    self.assertEqual("user", message["role"])
+                    self.assertIn(block["toolResult"]["toolUseId"], pending)
+                    pending.remove(block["toolResult"]["toolUseId"])
+        self.assertEqual(set(), pending)
+
+    def flatten(self, items):
+        messages = []
+        for unit in conversation._reconstruct_messages(items):
+            for message in unit:
+                conversation._append_message(messages, message["role"], message["content"])
+        return messages
+
+    def test_persisted_result_then_later_user_reconstructs_valid_converse_request(self):
+        messages = self.flatten([
+            self.item("user", [{"text": "prior"}]),
+            self.item("assistant", [self.tool_use("affected")]),
+            self.item("user", [self.tool_result("affected")]),
+            self.item("user", [{"text": "later"}]),
+        ])
+        self.assert_valid(messages)
+        self.assertEqual("affected", messages[1]["content"][0]["toolUse"]["toolUseId"])
+        self.assertEqual("affected", messages[2]["content"][0]["toolResult"]["toolUseId"])
+        self.assertEqual("later", messages[2]["content"][1]["text"])
+
+    def test_missing_result_removes_complete_exchange_from_request(self):
+        messages = self.flatten([self.item("assistant", [self.tool_use("missing")]), self.item("user", [{"text": "later"}])])
+        self.assertEqual([{"role": "user", "content": [{"text": "later"}]}], messages)
+
+    def test_multiple_failed_tools_and_duplicate_results(self):
+        messages = self.flatten([
+            self.item("assistant", [self.tool_use("one"), self.tool_use("two")]),
+            self.item("user", [self.tool_result("one"), self.tool_result("two", "error")]),
+            self.item("user", [self.tool_result("one"), {"text": "later"}]),
+        ])
+        self.assert_valid(messages)
+        results = [b["toolResult"] for b in messages[1]["content"] if "toolResult" in b]
+        self.assertEqual(["one", "two"], [result["toolUseId"] for result in results])
+        self.assertEqual("error", results[1]["status"])
+        self.assertEqual("later", messages[1]["content"][-1]["text"])
+
+    def test_truncation_drops_whole_tool_exchange(self):
+        original = conversation.MAX_CONTEXT_MESSAGES
+        conversation.MAX_CONTEXT_MESSAGES = 2
+        try:
+            table = Mock()
+            table.query.return_value = {"Items": [
+                {"role": "user", "content_json": json.dumps([{"text": "old"}])},
+                {"role": "assistant", "content_json": json.dumps([self.tool_use("pair")])},
+                {"role": "user", "content_json": json.dumps([self.tool_result("pair")])},
+                {"role": "user", "content_json": json.dumps([{"text": "new"}])},
+            ]}
+            messages = conversation._load_messages(table, "abc")
+        finally:
+            conversation.MAX_CONTEXT_MESSAGES = original
+        self.assert_valid(messages)
+        self.assertNotIn("pair", json.dumps(messages))
+
+    def test_interrupted_execution_is_persisted_as_synthetic_error(self):
+        table = Mock()
+        table.query.return_value = {"Items": [
+            {"role": "assistant", "content_json": json.dumps([self.tool_use("interrupted")])}
+        ]}
+        self.assertEqual(1, conversation._reconcile_unsettled_tool_uses(table, "abc"))
+        stored = table.put_item.call_args.kwargs["Item"]
+        result = json.loads(stored["content_json"])[0]["toolResult"]
+        self.assertEqual("interrupted", result["toolUseId"])
+        self.assertEqual("error", result["status"])
+
+    def test_paginated_history_keeps_result_with_tool_use(self):
+        table = Mock()
+        table.query.side_effect = [
+            {"Items": [{"role": "assistant", "content_json": json.dumps([self.tool_use("paged")])}], "LastEvaluatedKey": {"record_key": "page"}},
+            {"Items": [{"role": "user", "content_json": json.dumps([self.tool_result("paged")])}, {"role": "user", "content_json": json.dumps([{"text": "later"}])}]},
+        ]
+        messages = conversation._load_messages(table, "abc")
+        self.assert_valid(messages)
+        self.assertEqual("later", messages[-1]["content"][-1]["text"])
