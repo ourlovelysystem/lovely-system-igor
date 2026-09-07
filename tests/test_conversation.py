@@ -69,6 +69,45 @@ class ConversationTests(unittest.TestCase):
         result = self.call("GET", "/conversations/abc")
         self.assertEqual(404, result["statusCode"])
 
+    def test_first_telephone_message_creates_opaque_conversation_and_returns_text(self):
+        self.table.get_item.return_value = {}
+        self.table.query.return_value = {
+            "Items": [
+                {
+                    "role": "user",
+                    "content_json": '[{"text":"What is two plus two?"}]',
+                }
+            ]
+        }
+        self.bedrock.converse.return_value = {
+            "stopReason": "end_turn",
+            "output": {"message": {"role": "assistant", "content": [{"text": "Four."}]}},
+        }
+
+        result = self.call(
+            "POST",
+            "/conversations/opaque-call/messages",
+            {"message": "What is two plus two?", "telephone": True},
+            owner="telephone",
+        )
+
+        self.assertEqual(200, result["statusCode"])
+        self.assertEqual("Four.", json.loads(result["body"])["text"])
+        created = self.table.put_item.call_args_list[0].kwargs["Item"]
+        self.assertEqual("opaque-call", created["conversation_id"])
+        self.assertEqual("telephone", created["owner_id"])
+        self.assertEqual("META", created["record_key"])
+
+    def test_missing_operator_conversation_is_not_created_implicitly(self):
+        self.table.get_item.return_value = {}
+        result = self.call(
+            "POST",
+            "/conversations/missing/messages",
+            {"message": "Hello"},
+        )
+        self.assertEqual(404, result["statusCode"])
+        self.table.put_item.assert_not_called()
+
     def test_general_conversation_returns_model_text_without_tool(self):
         self.table.query.return_value = {
             "Items": [
