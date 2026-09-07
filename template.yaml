@@ -57,8 +57,6 @@ Resources:
           AttributeType: S
         - AttributeName: record_key
           AttributeType: S
-        - AttributeName: meeting_id
-          AttributeType: S
       KeySchema:
         - AttributeName: conversation_id
           KeyType: HASH
