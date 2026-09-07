@@ -492,6 +492,9 @@ Resources:
               - Effect: Allow
                 Action: lambda:InvokeFunction
                 Resource: !GetAtt ConversationFunction.Arn
+              - Effect: Allow
+                Action: [dynamodb:PutItem, dynamodb:UpdateItem]
+                Resource: !GetAtt TelephoneCallsTable.Arn
   ReferenceCompatibleVoiceFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -592,6 +595,14 @@ Resources:
     Properties:
       Action: lambda:InvokeFunction
       FunctionName: !Ref VoiceAdapterFunction
+      Principal: voiceconnector.chime.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  ReferenceCompatibleChimePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ReferenceCompatibleVoiceFunction
       Principal: voiceconnector.chime.amazonaws.com
       SourceAccount: !Ref AWS::AccountId
 

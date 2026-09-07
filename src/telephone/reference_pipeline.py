@@ -18,6 +18,15 @@ def _leg(event:dict[str,Any],tag:str)->str:
 def _speak(text:str, call_id:str)->dict[str,Any]:
     # Exact gate1-green shape, not the prior direct-SMA SpeechParameters shape.
     return _action("Speak",{"Text":text,"CallId":call_id,"Engine":"neural","LanguageCode":"en-US","TextType":"text","VoiceId":"Joanna"})
+def _put_link(table: Any, transaction_id: str, meeting_id: str, conversation_id: str) -> None:
+    """Persist only opaque identifiers; never persist caller identity, audio, or transcript."""
+    if table:
+        table.put_item(Item={
+            "call_id": _opaque(transaction_id), "record_key": "CALL", "meeting_id": meeting_id,
+            "conversation_id": conversation_id, "media_state": "JOIN_REQUESTED",
+            "updated_at": datetime.now(UTC).isoformat(),
+        })
+
 def handler(event:dict[str,Any], context:Any, meetings:Any=None, table:Any=None)->dict[str,Any]:
     """Reference transitions: inbound->JoinChimeMeeting; update Response->Speak; hangup."""
     typ=event.get("InvocationEventType"); attrs=_attrs(event)
@@ -26,7 +35,7 @@ def handler(event:dict[str,Any], context:Any, meetings:Any=None, table:Any=None)
         out=client.create_meeting_with_attendees(ClientRequestToken=str(uuid.uuid4()),MediaRegion='us-east-1',ExternalMeetingId='MediaStreams',Attendees=[{"ExternalUserId":str(uuid.uuid4())}])
         meeting=out["Meeting"]["MeetingId"]; leg=_leg(event,"LEG-A")
         attrs.update(MeetingId=meeting,CallIdLegA=leg,IgorConversationId=_opaque(event.get("CallDetails",{}).get("TransactionId",meeting)))
-        if table: table.put_item(Item={"meetingId":meeting,"transactionId":event["CallDetails"]["TransactionId"],"igor_correlation":attrs["IgorConversationId"],"updated_at":datetime.now(UTC).isoformat()})
+        _put_link(table, str(event["CallDetails"]["TransactionId"]), meeting, attrs["IgorConversationId"])
         return _response([_action("JoinChimeMeeting",{"JoinToken":out["Attendees"][0]["JoinToken"],"CallId":leg,"MeetingId":meeting})],attrs)
     if typ=="ACTION_SUCCESSFUL" and (event.get("ActionData") or {}).get("Type")=="JoinChimeMeeting":
         attrs["CallIdLegA"]=_leg(event,"LEG-A") or attrs["CallIdLegA"]; attrs["CallIdLegB"]=_leg(event,"LEG-B") or attrs["CallIdLegB"]
@@ -35,6 +44,9 @@ def handler(event:dict[str,Any], context:Any, meetings:Any=None, table:Any=None)
         text=((event["ActionData"]["Parameters"]["Arguments"].get("Text") or "I am sorry, I could not prepare a response."))
         return _response([_speak(text,attrs["CallIdLegA"])],attrs)
     if typ=="HANGUP":
+        # Preserve the durable ledger for evidence/rollback; record terminal state without raw call IDs.
+        if table and event.get("CallDetails", {}).get("TransactionId"):
+            table.update_item(Key={"call_id": _opaque(str(event["CallDetails"]["TransactionId"])), "record_key": "CALL"}, UpdateExpression="SET media_state=:state, updated_at=:updated", ExpressionAttributeValues={":state": "HANGUP", ":updated": datetime.now(UTC).isoformat()})
         if attrs["MeetingId"]:
             (meetings or __import__('boto3').client('chime-sdk-meetings',region_name='us-east-1')).delete_meeting(MeetingId=attrs["MeetingId"])
         return _response([_action("Hangup",{"SipResponseCode":"0","CallId":attrs["CallIdLegB"]})] if (event.get("ActionData") or {}).get("Parameters",{}).get("ParticipantTag")=="LEG-A" and attrs["CallIdLegB"] else [],attrs)
