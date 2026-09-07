@@ -841,7 +841,33 @@ def handle(
             and method == "POST"
         ):
             conversation_id = parts[1]
-            meta = _get_meta(table, conversation_id, owner_id)
+            try:
+                meta = _get_meta(table, conversation_id, owner_id)
+            except RequestError as exc:
+                if not (
+                    exc.status_code == 404
+                    and owner_id == "telephone"
+                    and body.get("telephone") is True
+                ):
+                    raise
+                timestamp = now_iso()
+                meta = {
+                    "conversation_id": conversation_id,
+                    "record_key": "META",
+                    "owner_id": owner_id,
+                    "title": "Telephone conversation",
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                }
+                try:
+                    table.put_item(
+                        Item=meta,
+                        ConditionExpression="attribute_not_exists(conversation_id)",
+                    )
+                except Exception:
+                    # Concurrent final transcripts may race on first use. The
+                    # winner created the same opaque telephone conversation.
+                    meta = _get_meta(table, conversation_id, owner_id)
             text = body.get("message", "")
             if not isinstance(text, str):
                 raise RequestError(400, "message must be a string")
