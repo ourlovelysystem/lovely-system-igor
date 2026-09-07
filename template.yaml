@@ -474,6 +474,45 @@ Resources:
           CONTROL_FUNCTION_NAME: !Ref ControlFunction
           DIAGNOSTIC_AUDIO_BUCKET: !Ref DiagnosticAudioBucket
 
+  ReferenceCompatibleVoiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: {Version: "2012-10-17", Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: sts:AssumeRole}]}
+      Policies:
+        - PolicyName: ReferenceCompatibleMediaBoundary
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: "*"
+              - Effect: Allow
+                Action: [chime:CreateMeetingWithAttendees, chime:DeleteMeeting]
+                Resource: "*"
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt ConversationFunction.Arn
+  ReferenceCompatibleVoiceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/telephone/
+      Handler: reference_pipeline.handler
+      FunctionName: !Sub ${AWS::StackName}-reference-compatible-voice
+      Runtime: python3.12
+      Architectures: [arm64]
+      Timeout: 30
+      Role: !GetAtt ReferenceCompatibleVoiceRole.Arn
+  ReferenceCompatibleIgorBridgeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/telephone/
+      Handler: reference_pipeline.bridge
+      FunctionName: !Sub ${AWS::StackName}-reference-compatible-igor-bridge
+      Runtime: python3.12
+      Timeout: 30
+      Role: !GetAtt ReferenceCompatibleVoiceRole.Arn
+      Environment: {Variables: {CONVERSATION_FUNCTION_NAME: !Ref ConversationFunction}}
+
   LexBotRole:
     Type: AWS::IAM::Role
     Properties:
