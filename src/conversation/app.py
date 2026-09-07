@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -607,6 +609,7 @@ def handle(
     model_id: str,
     s3: Any = None,
     attachments_bucket: str = "",
+    telephone_secret: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         method, path, body = _request(event)
@@ -900,6 +903,8 @@ def handle(
                 ExpressionAttributeValues=values,
             )
 
+            telephone_authenticated = body.get("telephone") is True and _telephone_assertion_valid(
+                body.get("telephone_assertion"), conversation_id, telephone_secret)
             result = converse(
                 table=table,
                 bedrock=bedrock,
@@ -910,7 +915,7 @@ def handle(
                 attachments=attachments,
                 s3=s3,
                 attachments_bucket=attachments_bucket,
-                allow_tools=not bool(body.get("telephone")),
+                allow_tools=(not bool(body.get("telephone")) or telephone_authenticated),
             )
             return response(200, {"conversation_id": conversation_id, **result})
 
@@ -921,10 +926,32 @@ def handle(
         return response(500, {"error": f"conversation failed: {str(exc)[:1000]}"})
 
 
+def _telephone_assertion_valid(assertion: Any, conversation_id: str, secret: dict[str, Any] | None) -> bool:
+    """Validate the short-lived, call/conversation-bound HMAC assertion from PSTN ingress."""
+    if not isinstance(assertion, str) or not isinstance(secret, dict) or not isinstance(secret.get("pin"), str):
+        return False
+    try:
+        encoded, signature = assertion.split(".", 1)
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        claims = json.loads(raw)
+        expected = hmac.new(secret["pin"].encode(), raw, hashlib.sha256).hexdigest()
+        return (hmac.compare_digest(signature, expected) and claims.get("v") == 1
+                and claims.get("conversation_id") == conversation_id
+                and isinstance(claims.get("call_id"), str) and len(claims["call_id"]) == 32
+                and isinstance(claims.get("exp"), (int, float)) and claims["exp"] >= datetime.now(UTC).timestamp())
+    except Exception:
+        return False
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     del context
     import boto3
 
+    telephone_secret = None
+    if os.environ.get("TELEPHONE_AUTH_SECRET_NAME"):
+        try:
+            telephone_secret = json.loads(boto3.client("secretsmanager").get_secret_value(SecretId=os.environ["TELEPHONE_AUTH_SECRET_NAME"])["SecretString"])
+        except Exception:
+            telephone_secret = None
     return handle(
         event,
         table=boto3.resource("dynamodb").Table(os.environ["CONVERSATIONS_TABLE"]),
@@ -934,4 +961,5 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         model_id=os.environ["DEFAULT_MODEL_ID"],
         s3=boto3.client("s3"),
         attachments_bucket=os.environ["ATTACHMENTS_BUCKET"],
+        telephone_secret=telephone_secret,
     )
