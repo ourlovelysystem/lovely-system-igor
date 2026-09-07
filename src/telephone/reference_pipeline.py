@@ -62,5 +62,12 @@ def bridge(event:dict[str,Any], context:Any, lam:Any=None)->dict[str,Any]:
     client=lam or __import__('boto3').client('lambda')
     out=client.invoke(FunctionName=function,InvocationType="RequestResponse",Payload=json.dumps(payload).encode())
     if out.get("FunctionError"): raise RuntimeError("Igor conversation invocation failed")
-    body=json.loads(json.loads(out["Payload"].read()).get("body") or "{}")
-    return {"conversation_id":conversation_id,"response":str(body.get("message") or body.get("response") or "I am sorry, I could not prepare a response.")}
+    envelope=json.loads(out["Payload"].read())
+    status_code=int(envelope.get("statusCode") or 500)
+    body=json.loads(envelope.get("body") or "{}")
+    if status_code >= 400:
+        raise RuntimeError(f"Igor conversation returned HTTP {status_code}")
+    answer=body.get("text")
+    if not isinstance(answer,str) or not answer.strip():
+        raise RuntimeError("Igor conversation returned no text")
+    return {"conversation_id":conversation_id,"response":answer.strip()}
