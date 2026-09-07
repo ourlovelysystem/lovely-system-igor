@@ -20,6 +20,10 @@ class ReferencePipelineTests(unittest.TestCase):
   response=event('CALL_UPDATE_REQUESTED',attrs); response['ActionData']={'Parameters':{'Arguments':{'Function':'Response','Text':'answer fixture'}}}; self.assertEqual(rp.handler(response,None,meetings)['Actions'][0]['Parameters']['Text'],'answer fixture')
   hangup=event('HANGUP',attrs); hangup['ActionData']={'Parameters':{'ParticipantTag':'LEG-A'}}; self.assertEqual(rp.handler(hangup,None,meetings)['Actions'],[{'Type':'Hangup','Parameters':{'SipResponseCode':'0','CallId':'leg-b-fixture'}}]); meetings.delete_meeting.assert_called_once_with(MeetingId='meeting-fixture')
  def test_bridge_invokes_existing_conversation_at_prior_bedrock_boundary(self):
-  os.environ['CONVERSATION_FUNCTION_NAME']='conversation'; lam=Mock(); lam.invoke.return_value={'Payload':Mock(read=lambda:json.dumps({'body':json.dumps({'message':'answer'})}).encode())}
+  os.environ['CONVERSATION_FUNCTION_NAME']='conversation'; lam=Mock(); lam.invoke.return_value={'Payload':Mock(read=lambda:json.dumps({'statusCode':200,'body':json.dumps({'conversation_id':'conversation-fixture','text':'answer','tool_events':[]})}).encode())}
   result=rp.bridge({'meeting_id':'meeting-fixture','transcript':'final transcript fixture'},None,lam)
   self.assertEqual(result['response'],'answer'); payload=json.loads(lam.invoke.call_args.kwargs['Payload']); self.assertTrue(json.loads(payload['body'])['telephone'])
+ def test_bridge_rejects_conversation_http_error_instead_of_speaking_fallback(self):
+  os.environ['CONVERSATION_FUNCTION_NAME']='conversation'; lam=Mock(); lam.invoke.return_value={'Payload':Mock(read=lambda:json.dumps({'statusCode':404,'body':json.dumps({'error':'conversation not found'})}).encode())}
+  with self.assertRaisesRegex(RuntimeError,'HTTP 404'):
+   rp.bridge({'meeting_id':'meeting-fixture','transcript':'final transcript fixture'},None,lam)
