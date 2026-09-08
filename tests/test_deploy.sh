@@ -40,8 +40,10 @@ elif [[ "$*" == *'secretsmanager describe-secret'* ]]; then
 elif [[ "$*" == *'TelephoneAuthSecretName'* ]]; then
   printf '%s\n' 'igor/telephone-auth'
 elif [[ "$*" == *'ReferenceMeetingTableName'* ]]; then
-  printf '%s\n' 'None'
+  # Reproduce the malformed value created by paginated AWS CLI text output.
+  printf 'reference-meeting-table\nNone\n'
 elif [[ "$*" == *'list-stack-resources'* && "$*" == *'meetingTable'* ]]; then
+  [[ "$*" == *'--no-paginate'* ]] || { printf 'reference-meeting-table\nNone\n'; exit 0; }
   printf '%s\n' 'reference-meeting-table'
 elif [[ "$*" == *'GitHubTokenSecretName'* ]]; then
   [[ "$SCENARIO" == parameter-failure ]] && { echo 'lookup denied' >&2; exit 255; }
@@ -91,6 +93,7 @@ import sys
 args=open(sys.argv[1], 'rb').read().split(b'\0')
 for expected in (b'polly', b'synthesize-speech', b'Hello from Igor', b'8000'):
     assert expected in args, args
+assert b'--no-paginate' in args, args
 PY
 }
 
