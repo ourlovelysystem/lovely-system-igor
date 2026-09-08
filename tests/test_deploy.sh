@@ -5,6 +5,11 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
+# macOS still ships Bash 3.2, which does not support the newer [[ -v NAME ]] test.
+if grep -Eq '\[\[[[:space:]]+-v[[:space:]]' "$repo_root/scripts/deploy.sh"; then
+  echo 'deploy.sh uses a Bash conditional unavailable on macOS Bash 3.2' >&2
+  exit 1
+fi
 # Runtime-generated secret content: it must never reach output, command logs, or artifacts.
 secret_sentinel="DEPLOY-SECRET-SENTINEL-$(date +%s%N)-$$"
 
