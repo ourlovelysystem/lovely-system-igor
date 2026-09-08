@@ -19,6 +19,7 @@ def _leg(e:dict[str,Any],tag:str)->str:
   if p.get("ParticipantTag")==tag and isinstance(p.get("CallId"),str):return p["CallId"]
  return ""
 def _speak(text:str,call_id:str)->dict[str,Any]:return _action("Speak",{"Text":text,"CallId":call_id,"Engine":"neural","LanguageCode":"en-US","TextType":"text","VoiceId":"Joanna"})
+def _speak_leg_a(text:str)->dict[str,Any]:return _action("Speak",{"Text":text,"ParticipantTag":"LEG-A","Engine":"neural","LanguageCode":"en-US","TextType":"text","VoiceId":"Joanna"})
 def _speech(text:str)->dict[str,str]:
  return {"Text":text,"Engine":"neural","LanguageCode":"en-US","TextType":"text","VoiceId":"Joanna"}
 def _prompt(call_id:str,retry=False)->dict[str,Any]:
@@ -72,7 +73,10 @@ def handler(event:dict[str,Any],context:Any,meetings:Any=None,table:Any=None,sec
   # caller hears acknowledgement before the existing meeting join action.
   _safe_auth_diagnostic(event,"ACCEPTED",call_id,"Speak")
   return _response([_speak("PIN accepted. Connecting you to Igor.",leg),_action("JoinChimeMeeting",{"JoinToken":out['Attendees'][0]['JoinToken'],"CallId":leg,"MeetingId":meeting})],attrs)
- if typ=="CALL_UPDATE_REQUESTED" and ((event.get("ActionData")or{}).get("Parameters")or{}).get("Arguments",{}).get("Function")=="Response":return _response([_speak(str(((event.get('ActionData')or{}).get('Parameters')or{}).get('Arguments',{}).get('Text')or'Execution service is unavailable.'),attrs['CallIdLegA'])],attrs)
+ if typ=="CALL_UPDATE_REQUESTED":
+  arguments=((event.get("ActionData")or{}).get("Parameters")or{}).get("Arguments",{})
+  if arguments.get("Function")=="Thinking":return _response([_speak_leg_a("Igor is thinking. Please remain on the line.")],attrs)
+  if arguments.get("Function")=="Response":return _response([_speak_leg_a(str(arguments.get("Text")or"Execution service is unavailable."))],attrs)
  return _response([],attrs)
 def bridge(event:dict[str,Any],context:Any,lam:Any=None,table:Any=None)->dict[str,Any]:
  if not _configured():return {"conversation_id":"","response":"Telephone service configuration is unavailable."}

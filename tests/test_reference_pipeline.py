@@ -119,3 +119,10 @@ class RuntimeContractTests(unittest.TestCase):
   with unittest.mock.patch.dict(os.environ,self.required,clear=True):
    table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED'}};meetings=Mock();meetings.create_meeting_with_attendees.return_value={'Meeting':{'MeetingId':'meeting'},'Attendees':[{'JoinToken':'join'}]};pin=event('ACTION_SUCCESSFUL');pin['ActionData']={'Type':'SpeakAndGetDigits','ReceivedDigits':'1234#'};reference=Mock();authenticated=rp.handler(pin,None,meetings,table,secret,reference)
   self.assertEqual(['Speak','JoinChimeMeeting'],[a['Type'] for a in authenticated['Actions']]);self.assertEqual('PIN accepted. Connecting you to Igor.',authenticated['Actions'][0]['Parameters']['Text']);self.assertEqual({'JoinToken':'join','CallId':'leg','MeetingId':'meeting'},authenticated['Actions'][1]['Parameters']);self.assertEqual({'MeetingId':'meeting','CallIdLegA':'leg','CallIdLegB':'','IgorConversationId':rp._opaque('fixture')},authenticated['TransactionAttributes']);row=table.put_item.call_args.kwargs['Item'];self.assertEqual('AUTHENTICATED',row['authentication']);self.assertTrue(row['authenticated_assertion']);reference.put_item.assert_called_once_with(Item={'meetingId':'meeting','transactionId':'fixture'})
+ def test_call_updates_keep_caller_informed_and_target_live_leg(self):
+  for function,text in (("Thinking",None),("Response","answer fixture")):
+   with self.subTest(function=function):
+    incoming=event('CALL_UPDATE_REQUESTED');incoming['ActionData']={'Type':'CallUpdateRequest','Parameters':{'Arguments':{'Function':function,**({'Text':text} if text else {})}}}
+    with unittest.mock.patch.dict(os.environ,self.required,clear=True): out=rp.handler(incoming,None,Mock(),Mock(),Mock())
+    self.assertEqual(['Speak'],[action['Type'] for action in out['Actions']]);parameters=out['Actions'][0]['Parameters'];self.assertEqual('LEG-A',parameters['ParticipantTag']);self.assertNotIn('CallId',parameters)
+    self.assertEqual('Igor is thinking. Please remain on the line.' if function=='Thinking' else text,parameters['Text'])
