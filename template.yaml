@@ -27,9 +27,14 @@ Parameters:
     Type: String
     Default: ""
     Description: Lex V2 alias ARN configured after bot provisioning
+  ReferenceMeetingTableName:
+    Type: String
+    Default: ""
+    Description: Existing AmazonChimeSDKMediaStreams meeting-to-transaction table
 
 Conditions:
   HasGitHubCredentials: !Not [!Equals [!Ref GitHubTokenSecretName, ""]]
+  HasReferenceMeetingTable: !Not [!Equals [!Ref ReferenceMeetingTableName, ""]]
 
 Resources:
   JobsTable:
@@ -518,6 +523,12 @@ Resources:
               - Effect: Allow
                 Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query]
                 Resource: [!GetAtt TelephoneCallsTable.Arn, !Sub "${TelephoneCallsTable.Arn}/index/MeetingIdIndex"]
+              - !If
+                - HasReferenceMeetingTable
+                - Effect: Allow
+                  Action: dynamodb:PutItem
+                  Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ReferenceMeetingTableName}
+                - !Ref AWS::NoValue
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
                 Resource: !Ref TelephoneAuthSecretArn
@@ -537,6 +548,7 @@ Resources:
           TELEPHONE_CALLS_TABLE: !Ref TelephoneCallsTable
           CONTROL_FUNCTION_NAME: !Ref ControlFunction
           CONVERSATION_FUNCTION_NAME: !Ref ConversationFunction
+          REFERENCE_MEETING_TABLE: !Ref ReferenceMeetingTableName
   ReferenceCompatibleIgorBridgeFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -546,7 +558,7 @@ Resources:
       Runtime: python3.12
       Timeout: 30
       Role: !GetAtt ReferenceCompatibleVoiceRole.Arn
-      Environment: {Variables: {CONVERSATION_FUNCTION_NAME: !Ref ConversationFunction, CONTROL_FUNCTION_NAME: !Ref ControlFunction, TELEPHONE_CALLS_TABLE: !Ref TelephoneCallsTable, TELEPHONE_AUTH_SECRET_NAME: !Ref TelephoneAuthSecretName}}
+      Environment: {Variables: {CONVERSATION_FUNCTION_NAME: !Ref ConversationFunction, CONTROL_FUNCTION_NAME: !Ref ControlFunction, TELEPHONE_CALLS_TABLE: !Ref TelephoneCallsTable, TELEPHONE_AUTH_SECRET_NAME: !Ref TelephoneAuthSecretName, REFERENCE_MEETING_TABLE: !Ref ReferenceMeetingTableName}}
 
   LexBotRole:
     Type: AWS::IAM::Role
