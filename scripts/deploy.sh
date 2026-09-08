@@ -82,20 +82,24 @@ fi
 # Preserve an existing binding when present. During the first binding, discover
 # the reference stack's existing meeting table by resource type and logical ID;
 # this reads infrastructure metadata only.
+valid_table_name() {
+  [[ "$1" =~ ^[A-Za-z0-9_.-]+$ && ${#1} -ge 3 && ${#1} -le 255 ]]
+}
 reference_meeting_table_name="${IGOR_REFERENCE_MEETING_TABLE_NAME:-}"
 if [[ -z "$reference_meeting_table_name" && -n "${existing_stack_id:-}" ]]; then
   reference_meeting_table_name="$(aws cloudformation describe-stacks \
     --stack-name "$stack_name" --region "$region" \
     --query 'Stacks[0].Parameters[?ParameterKey==`ReferenceMeetingTableName`].ParameterValue | [0]' --output text)"
-  [[ "$reference_meeting_table_name" == "None" ]] && reference_meeting_table_name=""
+  valid_table_name "$reference_meeting_table_name" || reference_meeting_table_name=""
 fi
 if [[ -z "$reference_meeting_table_name" ]]; then
   reference_stack_name="${IGOR_REFERENCE_STACK_NAME:-AmazonChimeSDKMediaStreams}"
   reference_meeting_table_name="$(aws cloudformation list-stack-resources \
     --stack-name "$reference_stack_name" --region "$region" \
+    --no-paginate \
     --query 'StackResourceSummaries[?ResourceType==`AWS::DynamoDB::Table` && contains(LogicalResourceId, `meetingTable`)].PhysicalResourceId | [0]' --output text)"
 fi
-[[ "$reference_meeting_table_name" != "None" && -n "$reference_meeting_table_name" ]] || { echo "ReferenceMeetingTableName is required; refusing to deploy." >&2; exit 1; }
+valid_table_name "$reference_meeting_table_name" || { echo "ReferenceMeetingTableName must be one exact DynamoDB table name; refusing to deploy." >&2; exit 1; }
 
 sam build
 sam deploy \
