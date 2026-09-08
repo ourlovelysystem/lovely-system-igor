@@ -148,7 +148,9 @@
       const config = window.IGOR_CONFIG;
       const terminal = new Set(['WORKING', 'FAILED', 'BLOCKED', 'INCOMPLETE']);
       const tokenKey = 'igor.idToken';
-      let challenge = null, timer = null, currentConversationId = null, conversationPromise = null, conversations = [], jobStates = new Map(), latestJobs = [], pendingAttachments = [], attachmentsByConversation = new Map(), sending = false;
+      const refreshTokenKey = 'igor.refreshToken';
+      const refreshSkewMs = 5 * 60 * 1000;
+      let challenge = null, timer = null, refreshPromise = null, currentConversationId = null, conversationPromise = null, conversations = [], jobStates = new Map(), latestJobs = [], pendingAttachments = [], attachmentsByConversation = new Map(), sending = false;
       const $ = (id) => document.getElementById(id);
       const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[character]);
 
@@ -157,7 +159,11 @@
           method:'POST', headers:{'content-type':'application/x-amz-json-1.1','x-amz-target':`AWSCognitoIdentityProviderService.${action}`}, body:JSON.stringify(payload)
         });
         const body = await result.json();
-        if (!result.ok) throw new Error(body.message || body.__type || `Sign-in failed (${result.status})`);
+        if (!result.ok) {
+          const error=new Error(body.message || body.__type || `Sign-in failed (${result.status})`);
+          error.authenticationRejected=result.status>=400&&result.status<500;
+          throw error;
+        }
         return body;
       }
       function tokenClaims(token) {
@@ -166,21 +172,56 @@
           return JSON.parse(atob(payload.padEnd(Math.ceil(payload.length/4)*4,'=')));
         } catch (_) { return {}; }
       }
+      function storeAuthentication(authentication) {
+        if (!authentication || !authentication.IdToken) throw new Error('Cognito returned no identity token.');
+        sessionStorage.setItem(tokenKey,authentication.IdToken);
+        if (authentication.RefreshToken) sessionStorage.setItem(refreshTokenKey,authentication.RefreshToken);
+        return authentication.IdToken;
+      }
+      async function refreshSession() {
+        if (refreshPromise) return refreshPromise;
+        const refreshToken=sessionStorage.getItem(refreshTokenKey);
+        if (!refreshToken) { const error=new Error('No refresh token is available.'); error.authenticationRejected=true; throw error; }
+        refreshPromise=cognito('InitiateAuth',{AuthFlow:'REFRESH_TOKEN_AUTH',ClientId:config.clientId,AuthParameters:{REFRESH_TOKEN:refreshToken}})
+          .then((result)=>storeAuthentication(result.AuthenticationResult))
+          .finally(()=>{refreshPromise=null;});
+        return refreshPromise;
+      }
+      async function currentToken(forceRefresh=false) {
+        const token=sessionStorage.getItem(tokenKey),claims=token?tokenClaims(token):{};
+        if (!forceRefresh&&token&&claims.exp&&claims.exp*1000>Date.now()+refreshSkewMs) return token;
+        return refreshSession();
+      }
       async function api(path, options={}) {
-        const result = await fetch(`${config.apiUrl}${path}`, {...options, headers:{authorization:`Bearer ${sessionStorage.getItem(tokenKey)}`,'content-type':'application/json',...(options.headers||{})}});
+        const request=async(token)=>fetch(`${config.apiUrl}${path}`, {...options, headers:{authorization:`Bearer ${token}`,'content-type':'application/json',...(options.headers||{})}});
+        let token;
+        try {
+          token=await currentToken();
+        } catch (error) {
+          if (error.authenticationRejected) { signOut('Your session ended. Sign in again.'); throw new Error('Session ended'); }
+          throw error;
+        }
+        let result=await request(token);
+        if (result.status===401||result.status===403) {
+          try { result=await request(await currentToken(true)); }
+          catch (error) {
+            if (error.authenticationRejected) { signOut('Your session ended. Sign in again.'); throw new Error('Session ended'); }
+            throw error;
+          }
+        }
         let body={}; try { body=await result.json(); } catch (_) { body={error:'The API returned an unreadable response.'}; }
         if (result.status===401 || result.status===403) { signOut('Your session ended. Sign in again.'); throw new Error('Session ended'); }
         if (!result.ok) throw new Error(body.error || `Request failed (${result.status})`);
         return body;
       }
       function useSession(authentication) {
-        const token=authentication.IdToken; sessionStorage.setItem(tokenKey,token); const claims=tokenClaims(token);
+        const token=storeAuthentication(authentication),claims=tokenClaims(token);
         $('identity').textContent=claims.email || claims['cognito:username'] || 'Authenticated operator';
         $('loginView').hidden=true; $('dashboardView').hidden=false; $('loginError').textContent='';
         loadConversations(); refreshJobs(); clearInterval(timer); timer=setInterval(refreshJobs,3000);
       }
       function signOut(message='') {
-        sessionStorage.removeItem(tokenKey); clearInterval(timer); currentConversationId=null;
+        sessionStorage.removeItem(tokenKey); sessionStorage.removeItem(refreshTokenKey); clearInterval(timer); currentConversationId=null;
         $('dashboardView').hidden=true; $('loginView').hidden=false; $('loginForm').hidden=false; $('newPasswordForm').hidden=true; $('loginError').textContent=message;
       }
       function renderConversationList() {
@@ -292,7 +333,7 @@
       $('conversationList').addEventListener('click',(event)=>{const id=event.target.dataset&&event.target.dataset.conversation;if(id)selectConversation(id).catch((error)=>{$('messageError').textContent=error.message;});});
       $('jobs').addEventListener('click',async(event)=>{const value=event.target.dataset&&event.target.dataset.copy;if(!value)return;await navigator.clipboard.writeText(value);const previous=event.target.textContent;event.target.textContent='Copied';setTimeout(()=>{event.target.textContent=previous;},900);});
       $('logoutButton').addEventListener('click',()=>signOut());
-      const existing=sessionStorage.getItem(tokenKey),claims=existing?tokenClaims(existing):{}; if(existing&&claims.exp&&claims.exp*1000>Date.now()+30000)useSession({IdToken:existing});else signOut();
+      const existing=sessionStorage.getItem(tokenKey); if(existing)currentToken().then((token)=>useSession({IdToken:token})).catch(()=>signOut());else signOut();
     })();
   </script>
 </body>
