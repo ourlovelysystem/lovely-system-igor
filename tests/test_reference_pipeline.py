@@ -51,7 +51,7 @@ class T(unittest.TestCase):
   self.assertEqual('SpeakAndGetDigits',rp.handler(bad,None,Mock(),self.table,self.sec)['Actions'][0]['Type'])
  def test_authenticated_pin_creates_bound_assertion_and_joins(self):
   self.table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED'}};m=Mock();m.create_meeting_with_attendees.return_value={'Meeting':{'MeetingId':'m'},'Attendees':[{'JoinToken':'j'}]};e=event('ACTION_SUCCESSFUL');e['ActionData']={'Type':'SpeakAndGetDigits','ReceivedDigits':'1234#'}
-  self.assertEqual('JoinChimeMeeting',rp.handler(e,None,m,self.table,self.sec)['Actions'][0]['Type']);row=self.table.put_item.call_args.kwargs['Item'];self.assertEqual('AUTHENTICATED',row['authentication']);self.assertTrue(rp._assertion(row['call_id'],row['conversation_id'],'1234'))
+  out=rp.handler(e,None,m,self.table,self.sec);self.assertEqual(['Speak','JoinChimeMeeting'],[a['Type'] for a in out['Actions']]);self.assertEqual('PIN accepted. Connecting you to Igor.',out['Actions'][0]['Parameters']['Text']);row=self.table.put_item.call_args.kwargs['Item'];self.assertEqual('AUTHENTICATED',row['authentication']);self.assertTrue(rp._assertion(row['call_id'],row['conversation_id'],'1234'))
  def call(self,text,row=None):
   row=row or {'call_id':'c'*32,'conversation_id':'v','authentication':'AUTHENTICATED','assertion_expires_at':int(time.time()+100),'authenticated_assertion':rp._assertion('c'*32,'v','1234')};self.table.query.return_value={'Items':[row]};return rp.bridge({'meeting_id':'m','transcript':text},None,Mock(),self.table)
  def test_authenticated_conversation_passes_assertion_to_tools_boundary(self):
@@ -92,17 +92,22 @@ class RuntimeContractTests(unittest.TestCase):
   table=Mock();secret=Mock();secret.get_secret_value.return_value={'SecretString':json.dumps({'allow_any_caller':True,'pin':'1234'})}
   with unittest.mock.patch.dict(os.environ,self.required,clear=True):
    table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED'}};meetings=Mock();meetings.create_meeting_with_attendees.return_value={'Meeting':{'MeetingId':'meeting'},'Attendees':[{'JoinToken':'join'}]};pin=event('ACTION_SUCCESSFUL');pin['ActionData']={'Type':'SpeakAndGetDigits','ReceivedDigits':'1234'};authenticated=rp.handler(pin,None,meetings,table,secret)
-  self.assertEqual('JoinChimeMeeting',authenticated['Actions'][0]['Type']);row=table.put_item.call_args.kwargs['Item'];self.assertEqual('AUTHENTICATED',row['authentication']);self.assertTrue(row['authenticated_assertion'])
- def test_safe_lifecycle_diagnostic_logs_required_fields_but_not_pin_or_payload(self):
-  incoming=event('ACTION_FAILED');incoming['Sequence']=7;incoming['ActionData']={'Type':'SpeakAndGetDigits','ErrorType':'InvalidDigits','ErrorMessage':'input failed','ReceivedDigits':'1234#'}
+  self.assertEqual(['Speak','JoinChimeMeeting'],[a['Type'] for a in authenticated['Actions']]);self.assertEqual('PIN accepted. Connecting you to Igor.',authenticated['Actions'][0]['Parameters']['Text']);self.assertEqual({'JoinToken':'join','CallId':'leg','MeetingId':'meeting'},authenticated['Actions'][1]['Parameters']);self.assertEqual({'MeetingId':'meeting','CallIdLegA':'leg','CallIdLegB':'','IgorConversationId':rp._opaque('fixture')},authenticated['TransactionAttributes']);row=table.put_item.call_args.kwargs['Item'];self.assertEqual('AUTHENTICATED',row['authentication']);self.assertTrue(row['authenticated_assertion'])
+ def test_safe_lifecycle_diagnostic_logs_only_required_non_sensitive_fields(self):
+  table=Mock();secret=Mock();secret.get_secret_value.return_value={'SecretString':json.dumps({'allow_any_caller':True,'pin':'1234'})};table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED','pin_attempts':0}}
+  incoming=event('ACTION_SUCCESSFUL');incoming['Sequence']=7;incoming['ActionData']={'Type':'SpeakAndGetDigits','ReceivedDigits':'0000#','ErrorMessage':'must-not-log'};incoming['CallDetails']['TransactionId']='caller-identity-must-not-log'
   stream=io.StringIO()
   with contextlib.redirect_stdout(stream):
-   with unittest.mock.patch.dict(os.environ,{},clear=True): rp.handler(incoming,None)
+   with unittest.mock.patch.dict(os.environ,self.required,clear=True): rp.handler(incoming,None,Mock(),table,secret)
   logged=json.loads(stream.getvalue())['chime_diagnostic']
-  self.assertEqual({'InvocationEventType':'ACTION_FAILED','Sequence':7,'ActionType':'SpeakAndGetDigits','ErrorType':'InvalidDigits','ErrorMessage':'input failed'},logged)
-  self.assertNotIn('1234',stream.getvalue());self.assertNotIn('CallDetails',stream.getvalue())
+  self.assertEqual({'auth_outcome':'REJECTED','call_correlation':rp._opaque('caller-identity-must-not-log'),'next_action':'SpeakAndGetDigits','invocation_event_type':'ACTION_SUCCESSFUL','invocation_sequence':7},logged)
+  for sensitive in ('0000','1234','caller-identity-must-not-log','must-not-log','CallDetails','ReceivedDigits','ErrorMessage'): self.assertNotIn(sensitive,stream.getvalue())
+ def test_incorrect_pin_never_acknowledges_or_joins(self):
+  table=Mock();secret=Mock();secret.get_secret_value.return_value={'SecretString':json.dumps({'allow_any_caller':True,'pin':'1234'})};table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED','pin_attempts':0}};pin=event('ACTION_SUCCESSFUL');pin['ActionData']={'Type':'SpeakAndGetDigits','ReceivedDigits':'0000#'}
+  with unittest.mock.patch.dict(os.environ,self.required,clear=True): out=rp.handler(pin,None,Mock(),table,secret)
+  self.assertNotIn('PIN accepted. Connecting you to Igor.',json.dumps(out));self.assertNotIn('JoinChimeMeeting',[a['Type'] for a in out['Actions']])
  def test_post_auth_handoff_contract(self):
   table=Mock();secret=Mock();secret.get_secret_value.return_value={'SecretString':json.dumps({'allow_any_caller':True,'pin':'1234'})}
   with unittest.mock.patch.dict(os.environ,self.required,clear=True):
    table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED'}};meetings=Mock();meetings.create_meeting_with_attendees.return_value={'Meeting':{'MeetingId':'meeting'},'Attendees':[{'JoinToken':'join'}]};pin=event('ACTION_SUCCESSFUL');pin['ActionData']={'Type':'SpeakAndGetDigits','ReceivedDigits':'1234#'};authenticated=rp.handler(pin,None,meetings,table,secret)
-  self.assertEqual('JoinChimeMeeting',authenticated['Actions'][0]['Type']);row=table.put_item.call_args.kwargs['Item'];self.assertEqual('AUTHENTICATED',row['authentication']);self.assertTrue(row['authenticated_assertion'])
+  self.assertEqual(['Speak','JoinChimeMeeting'],[a['Type'] for a in authenticated['Actions']]);self.assertEqual('PIN accepted. Connecting you to Igor.',authenticated['Actions'][0]['Parameters']['Text']);self.assertEqual({'JoinToken':'join','CallId':'leg','MeetingId':'meeting'},authenticated['Actions'][1]['Parameters']);self.assertEqual({'MeetingId':'meeting','CallIdLegA':'leg','CallIdLegB':'','IgorConversationId':rp._opaque('fixture')},authenticated['TransactionAttributes']);row=table.put_item.call_args.kwargs['Item'];self.assertEqual('AUTHENTICATED',row['authentication']);self.assertTrue(row['authenticated_assertion'])
