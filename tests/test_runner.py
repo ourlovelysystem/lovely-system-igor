@@ -93,6 +93,62 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual({"maxTokens": 5000}, inference_config)
         self.assertNotIn("temperature", inference_config)
 
+    def test_model_request_records_exact_bedrock_usage(self):
+        bedrock = Mock()
+        bedrock.converse.return_value = {
+            "usage": {"inputTokens": 80, "outputTokens": 20, "totalTokens": 100},
+            "output": {
+                "message": {
+                    "content": [
+                        {
+                            "text": json.dumps(
+                                {"description": "Greeting", "app_py": VALID_SOURCE}
+                            )
+                        }
+                    ]
+                }
+            },
+        }
+        records = []
+
+        runner.model_request(
+            bedrock,
+            model_id="terra",
+            idea="Build a greeting",
+            usage_records=records,
+        )
+
+        self.assertEqual(80, records[0]["inputTokens"])
+        self.assertEqual(20, records[0]["outputTokens"])
+        self.assertEqual(100, records[0]["totalTokens"])
+        self.assertTrue(records[0]["usageAvailable"])
+        self.assertEqual(
+            {
+                "invocationCount": 1,
+                "usageComplete": True,
+                "inputTokens": 80,
+                "outputTokens": 20,
+                "totalTokens": 100,
+            },
+            runner.model_usage_totals(records),
+        )
+
+    def test_worker_prompt_contains_preflight_and_evidence_doctrine(self):
+        worker = runner.Worker(
+            table=Mock(),
+            bedrock=Mock(),
+            s3=Mock(),
+            cloudformation=Mock(),
+            evidence_bucket="bucket",
+            execution_role_arn="role",
+            cloudformation_role_arn="role",
+        )
+        prompt = worker.general_system_prompt("job-123", "/tmp/workspace")
+        self.assertIn("verify the complete delivery path", prompt)
+        self.assertIn("stop before editing", prompt)
+        self.assertIn("first proven failed transition", prompt)
+        self.assertIn("not only job IDs or evidence URIs", prompt)
+
     def test_working_finish_requires_post_change_verification(self):
         commands = [
             {"command_id": "cmd-001", "category": "change", "exit_code": 0},
@@ -288,6 +344,7 @@ class RunnerTests(unittest.TestCase):
         bedrock = Mock()
         bedrock.converse.side_effect = [
             {
+                "usage": {"inputTokens": 100, "outputTokens": 10, "totalTokens": 110},
                 "output": {
                     "message": {
                         "content": [
@@ -307,6 +364,7 @@ class RunnerTests(unittest.TestCase):
                 }
             },
             {
+                "usage": {"inputTokens": 200, "outputTokens": 20, "totalTokens": 220},
                 "output": {
                     "message": {
                         "content": [
@@ -326,6 +384,7 @@ class RunnerTests(unittest.TestCase):
                 }
             },
             {
+                "usage": {"inputTokens": 300, "outputTokens": 30, "totalTokens": 330},
                 "output": {
                     "message": {
                         "content": [
@@ -383,6 +442,11 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual("WORKING", result["status"])
         self.assertEqual(2, len(result["commands"]))
         self.assertEqual(3, bedrock.converse.call_count)
+        self.assertEqual(3, result["modelUsageTotals"]["invocationCount"])
+        self.assertEqual(600, result["modelUsageTotals"]["inputTokens"])
+        self.assertEqual(60, result["modelUsageTotals"]["outputTokens"])
+        self.assertEqual(660, result["modelUsageTotals"]["totalTokens"])
+        self.assertTrue(result["modelUsageTotals"]["usageComplete"])
         self.assertEqual(2, s3.put_object.call_count)
         completion = conversations_table.put_item.call_args.kwargs["Item"]
         self.assertEqual("conversation-123", completion["conversation_id"])
