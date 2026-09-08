@@ -93,15 +93,23 @@ class RuntimeContractTests(unittest.TestCase):
   with unittest.mock.patch.dict(os.environ,self.required,clear=True):
    table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED'}};meetings=Mock();meetings.create_meeting_with_attendees.return_value={'Meeting':{'MeetingId':'meeting'},'Attendees':[{'JoinToken':'join'}]};pin=event('ACTION_SUCCESSFUL');pin['ActionData']={'Type':'SpeakAndGetDigits','ReceivedDigits':'1234'};authenticated=rp.handler(pin,None,meetings,table,secret)
   self.assertEqual(['Speak','JoinChimeMeeting'],[a['Type'] for a in authenticated['Actions']]);self.assertEqual('PIN accepted. Connecting you to Igor.',authenticated['Actions'][0]['Parameters']['Text']);self.assertEqual({'JoinToken':'join','CallId':'leg','MeetingId':'meeting'},authenticated['Actions'][1]['Parameters']);self.assertEqual({'MeetingId':'meeting','CallIdLegA':'leg','CallIdLegB':'','IgorConversationId':rp._opaque('fixture')},authenticated['TransactionAttributes']);row=table.put_item.call_args.kwargs['Item'];self.assertEqual('AUTHENTICATED',row['authentication']);self.assertTrue(row['authenticated_assertion'])
- def test_safe_lifecycle_diagnostic_logs_only_required_non_sensitive_fields(self):
+ def test_safe_auth_diagnostic_logs_only_required_non_sensitive_fields(self):
   table=Mock();secret=Mock();secret.get_secret_value.return_value={'SecretString':json.dumps({'allow_any_caller':True,'pin':'1234'})};table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED','pin_attempts':0}}
   incoming=event('ACTION_SUCCESSFUL');incoming['Sequence']=7;incoming['ActionData']={'Type':'SpeakAndGetDigits','ReceivedDigits':'0000#','ErrorMessage':'must-not-log'};incoming['CallDetails']['TransactionId']='caller-identity-must-not-log'
   stream=io.StringIO()
   with contextlib.redirect_stdout(stream):
    with unittest.mock.patch.dict(os.environ,self.required,clear=True): rp.handler(incoming,None,Mock(),table,secret)
-  logged=json.loads(stream.getvalue())['chime_diagnostic']
+  lines=stream.getvalue().splitlines();logged=json.loads(lines[1])['chime_diagnostic']
   self.assertEqual({'auth_outcome':'REJECTED','call_correlation':rp._opaque('caller-identity-must-not-log'),'next_action':'SpeakAndGetDigits','invocation_event_type':'ACTION_SUCCESSFUL','invocation_sequence':7},logged)
-  for sensitive in ('0000','1234','caller-identity-must-not-log','must-not-log','CallDetails','ReceivedDigits','ErrorMessage'): self.assertNotIn(sensitive,stream.getvalue())
+  for sensitive in ('0000','1234','caller-identity-must-not-log','must-not-log','CallDetails','ReceivedDigits','ErrorMessage'): self.assertNotIn(sensitive,lines[1])
+ def test_safe_lifecycle_diagnostic_is_preserved(self):
+  incoming=event('ACTION_FAILED');incoming['Sequence']=7;incoming['ActionData']={'Type':'SpeakAndGetDigits','ErrorType':'InvalidDigits','ErrorMessage':'input failed','ReceivedDigits':'1234#'}
+  stream=io.StringIO()
+  with contextlib.redirect_stdout(stream):
+   with unittest.mock.patch.dict(os.environ,{},clear=True): rp.handler(incoming,None)
+  logged=json.loads(stream.getvalue())['chime_diagnostic']
+  self.assertEqual({'InvocationEventType':'ACTION_FAILED','Sequence':7,'ActionType':'SpeakAndGetDigits','ErrorType':'InvalidDigits','ErrorMessage':'input failed'},logged)
+  self.assertNotIn('1234',stream.getvalue());self.assertNotIn('CallDetails',stream.getvalue())
  def test_incorrect_pin_never_acknowledges_or_joins(self):
   table=Mock();secret=Mock();secret.get_secret_value.return_value={'SecretString':json.dumps({'allow_any_caller':True,'pin':'1234'})};table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED','pin_attempts':0}};pin=event('ACTION_SUCCESSFUL');pin['ActionData']={'Type':'SpeakAndGetDigits','ReceivedDigits':'0000#'}
   with unittest.mock.patch.dict(os.environ,self.required,clear=True): out=rp.handler(pin,None,Mock(),table,secret)

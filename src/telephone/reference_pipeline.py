@@ -36,11 +36,16 @@ def _assertion(call_id:str,conversation_id:str,pin:str)->str:
 def _digits(e:dict[str,Any])->str:return str((e.get("ActionData")or{}).get("ReceivedDigits")or(e.get("ActionData")or{}).get("Digits")or"").rstrip("#")
 def _link(table:Any,meeting:str)->dict[str,Any]:
  r=table.query(IndexName="MeetingIdIndex",KeyConditionExpression="meeting_id = :m",ExpressionAttributeValues={":m":meeting},ConsistentRead=False);return (r.get("Items")or[{}])[0]
-def _safe_chime_diagnostic(event:dict[str,Any],auth_outcome:str,call_correlation:str,next_action:str)->None:
- # Log only non-sensitive lifecycle fields. Never log the event, PIN/digits,
- # caller data, transaction attributes, assertions, or transcript.
+def _safe_chime_diagnostic(event:dict[str,Any])->None:
+ # Preserve the non-sensitive lifecycle evidence used to diagnose Chime actions.
+ data=event.get("ActionData") if isinstance(event.get("ActionData"),dict) else {}
+ print(json.dumps({"chime_diagnostic":{"InvocationEventType":event.get("InvocationEventType"),"Sequence":event.get("Sequence"),"ActionType":data.get("Type"),"ErrorType":data.get("ErrorType"),"ErrorMessage":data.get("ErrorMessage")}}))
+def _safe_auth_diagnostic(event:dict[str,Any],auth_outcome:str,call_correlation:str,next_action:str)->None:
+ # Never log the event, PIN/digits, caller data, transaction attributes,
+ # assertions, or transcript in the authentication transition record.
  print(json.dumps({"chime_diagnostic":{"auth_outcome":auth_outcome,"call_correlation":call_correlation,"next_action":next_action,"invocation_event_type":event.get("InvocationEventType"),"invocation_sequence":event.get("Sequence")}}))
 def handler(event:dict[str,Any],context:Any,meetings:Any=None,table:Any=None,secrets:Any=None)->dict[str,Any]:
+ _safe_chime_diagnostic(event)
  typ=event.get("InvocationEventType"); attrs=_attrs(event); tx=str((event.get("CallDetails")or{}).get("TransactionId")or""); call_id=_opaque(tx); leg=_leg(event,"LEG-A")
  if not _configured():return _configuration_failure(event,attrs)
  table=table or __import__('boto3').resource('dynamodb').Table(os.environ['TELEPHONE_CALLS_TABLE']); secrets=secrets or __import__('boto3').client('secretsmanager')
@@ -55,16 +60,16 @@ def handler(event:dict[str,Any],context:Any,meetings:Any=None,table:Any=None,sec
   if not ok:
    n=int(call.get("pin_attempts",0))+1
    if n>=MAX_PIN_ATTEMPTS:
-    _safe_chime_diagnostic(event,"REJECTED",call_id,"Speak")
+    _safe_auth_diagnostic(event,"REJECTED",call_id,"Speak")
     return _response([_speak("Authentication failed. Goodbye.",leg),_action("Hangup",{"SipResponseCode":"0","CallId":leg})],attrs)
    table.update_item(Key={"call_id":call_id,"record_key":"CALL"},UpdateExpression="SET pin_attempts=:n",ExpressionAttributeValues={":n":n})
-   _safe_chime_diagnostic(event,"REJECTED",call_id,"SpeakAndGetDigits")
+   _safe_auth_diagnostic(event,"REJECTED",call_id,"SpeakAndGetDigits")
    return _prompt(leg,True)
   client=meetings or __import__('boto3').client('chime-sdk-meetings',region_name='us-east-1'); out=client.create_meeting_with_attendees(ClientRequestToken=str(uuid.uuid4()),MediaRegion='us-east-1',ExternalMeetingId='MediaStreams',Attendees=[{"ExternalUserId":str(uuid.uuid4())}]); meeting=out['Meeting']['MeetingId']; conv=_opaque(tx or meeting); assertion=_assertion(call_id,conv,sec['pin'])
   attrs.update(MeetingId=meeting,CallIdLegA=leg,IgorConversationId=conv); table.put_item(Item={"call_id":call_id,"record_key":"CALL","meeting_id":meeting,"conversation_id":conv,"authentication":"AUTHENTICATED","authenticated_assertion":assertion,"assertion_expires_at":int(time.time()+ASSERTION_SECONDS),"updated_at":datetime.now(UTC).isoformat(),"raw_audio_retained":False})
   # AWS documents an ordered Actions list; Speak is deliberately first so the
   # caller hears acknowledgement before the existing meeting join action.
-  _safe_chime_diagnostic(event,"ACCEPTED",call_id,"Speak")
+  _safe_auth_diagnostic(event,"ACCEPTED",call_id,"Speak")
   return _response([_speak("PIN accepted. Connecting you to Igor.",leg),_action("JoinChimeMeeting",{"JoinToken":out['Attendees'][0]['JoinToken'],"CallId":leg,"MeetingId":meeting})],attrs)
  if typ=="CALL_UPDATE_REQUESTED" and ((event.get("ActionData")or{}).get("Parameters")or{}).get("Arguments",{}).get("Function")=="Response":return _response([_speak(str(((event.get('ActionData')or{}).get('Parameters')or{}).get('Arguments',{}).get('Text')or'Execution service is unavailable.'),attrs['CallIdLegA'])],attrs)
  return _response([],attrs)
