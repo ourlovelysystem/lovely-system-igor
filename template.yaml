@@ -556,7 +556,7 @@ Resources:
       Handler: reference_pipeline.bridge
       FunctionName: !Sub ${AWS::StackName}-reference-compatible-igor-bridge
       Runtime: python3.12
-      Timeout: 30
+      Timeout: 90
       Role: !GetAtt ReferenceCompatibleVoiceRole.Arn
       Environment: {Variables: {CONVERSATION_FUNCTION_NAME: !Ref ConversationFunction, CONTROL_FUNCTION_NAME: !Ref ControlFunction, TELEPHONE_CALLS_TABLE: !Ref TelephoneCallsTable, TELEPHONE_AUTH_SECRET_NAME: !Ref TelephoneAuthSecretName, REFERENCE_MEETING_TABLE: !Ref ReferenceMeetingTableName}}
 
