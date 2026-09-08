@@ -133,6 +133,65 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual([], result["tool_events"])
         self.lambda_client.invoke.assert_not_called()
 
+    def test_conversation_records_exact_bedrock_usage_and_totals(self):
+        self.table.query.return_value = {
+            "Items": [{"role": "user", "content_json": '[{"text":"Hello"}]'}]
+        }
+        self.bedrock.converse.return_value = {
+            "usage": {"inputTokens": 101, "outputTokens": 7, "totalTokens": 108},
+            "output": {
+                "message": {"role": "assistant", "content": [{"text": "Hello."}]}
+            },
+        }
+
+        result = conversation.converse(
+            table=self.table,
+            bedrock=self.bedrock,
+            lambda_client=self.lambda_client,
+            control_function_name="igor-control",
+            model_id="model",
+            conversation_id="usage-test",
+        )
+
+        self.assertEqual(
+            {
+                "invocation": 1,
+                "modelId": "model",
+                "inputTokens": 101,
+                "outputTokens": 7,
+                "totalTokens": 108,
+                "usageAvailable": True,
+            },
+            result["modelUsage"][0],
+        )
+        self.assertEqual(
+            {
+                "invocationCount": 1,
+                "usageComplete": True,
+                "inputTokens": 101,
+                "outputTokens": 7,
+                "totalTokens": 108,
+            },
+            result["modelUsageTotals"],
+        )
+        assistant_item = self.table.put_item.call_args.kwargs["Item"]
+        self.assertEqual(result["modelUsage"][0], json.loads(assistant_item["model_usage_json"]))
+
+    def test_conversation_marks_missing_usage_without_estimating(self):
+        record = conversation._model_usage({}, model_id="model", invocation=2)
+        self.assertEqual(
+            {"invocation": 2, "modelId": "model", "usageAvailable": False},
+            record,
+        )
+        self.assertEqual(0, conversation._model_usage_totals([record])["totalTokens"])
+        self.assertFalse(conversation._model_usage_totals([record])["usageComplete"])
+
+    def test_conversation_prompt_contains_operating_doctrine(self):
+        self.assertIn("authorization boundary", conversation.SYSTEM_PROMPT)
+        self.assertIn("use its durable record rather than creating", conversation.SYSTEM_PROMPT)
+        self.assertIn("support the answer but do not replace it", conversation.SYSTEM_PROMPT)
+        self.assertIn("merely because an earlier transition succeeded", conversation.SYSTEM_PROMPT)
+
     def test_binary_reasoning_content_survives_storage_round_trip(self):
         content = [
             {"reasoningContent": {"redactedContent": b"\x00\xffprivate-reasoning"}},

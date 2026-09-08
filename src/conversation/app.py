@@ -64,7 +64,14 @@ Files marked `execution-worker` were not inspected by you: use execute_task with
 so the worker inspects them directly in S3. Do not claim that a file was read until its assigned component
 has done so. For every file-derived claim, name the file and cite a useful location (page, row range,
 sheet, or section when available). State plainly when the worker finds an unsupported, corrupt, encrypted,
-or truncated input and identify the inspecting component."""
+or truncated input and identify the inspecting component.
+
+Treat the operator's requested action as an authorization boundary: inspection and reporting do not
+authorize mutation. Distinguish verified facts, supported inferences, and unavailable facts explicitly.
+When asked to continue, recover, or report an existing job, use its durable record rather than creating
+a replacement job. Answer requested questions substantively in the conversation; status metadata and
+evidence locations support the answer but do not replace it. Never claim that authentication, execution,
+deployment, or success occurred merely because an earlier transition succeeded."""
 
 TOOL_CONFIG = {
     "tools": [
@@ -197,6 +204,7 @@ def _put_message(
     content: list[dict[str, Any]],
     display_text: str | None = None,
     attachments: list[dict[str, Any]] | None = None,
+    model_usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     timestamp = now_iso()
     item = {
@@ -214,8 +222,35 @@ def _put_message(
         item["display_text"] = display_text
     if attachments:
         item["attachments_json"] = json.dumps(attachments, separators=(",", ":"))
+    if model_usage:
+        item["model_usage_json"] = json.dumps(model_usage, separators=(",", ":"))
     table.put_item(Item=item)
     return item
+
+
+def _model_usage(result: dict[str, Any], *, model_id: str, invocation: int) -> dict[str, Any]:
+    """Capture Bedrock's reported counts exactly; never estimate missing usage."""
+    source = result.get("usage")
+    usage = source if isinstance(source, dict) else {}
+    record: dict[str, Any] = {"invocation": invocation, "modelId": model_id}
+    for key in ("inputTokens", "outputTokens", "totalTokens"):
+        value = usage.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            record[key] = value
+    record["usageAvailable"] = all(
+        key in record for key in ("inputTokens", "outputTokens", "totalTokens")
+    )
+    return record
+
+
+def _model_usage_totals(records: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "invocationCount": len(records),
+        "usageComplete": all(record["usageAvailable"] for record in records),
+        "inputTokens": sum(record.get("inputTokens", 0) for record in records),
+        "outputTokens": sum(record.get("outputTokens", 0) for record in records),
+        "totalTokens": sum(record.get("totalTokens", 0) for record in records),
+    }
 
 
 def _message_items(table: Any, conversation_id: str) -> list[dict[str, Any]]:
@@ -366,14 +401,15 @@ def _public_messages(table: Any, conversation_id: str) -> list[dict[str, Any]]:
         ]
         attachments = json.loads(item.get("attachments_json", "[]"))
         if text or tool_names or attachments:
-            messages.append(
-                {
-                    "role": item["role"],
-                    "text": text,
-                    "tools": tool_names,
-                    "attachments": attachments,
-                }
-            )
+            message = {
+                "role": item["role"],
+                "text": text,
+                "tools": tool_names,
+                "attachments": attachments,
+            }
+            if item.get("model_usage_json"):
+                message["modelUsage"] = json.loads(item["model_usage_json"])
+            messages.append(message)
     return messages
 
 
@@ -617,8 +653,9 @@ def converse(
     ]
     submitted_worker_job: dict[str, Any] | None = None
     tool_events: list[dict[str, Any]] = []
+    model_usage: list[dict[str, Any]] = []
 
-    for _ in range(MAX_TOOL_ROUNDS):
+    for invocation in range(1, MAX_TOOL_ROUNDS + 1):
         result = bedrock.converse(
             modelId=model_id,
             system=[{"text": SYSTEM_PROMPT}],
@@ -630,11 +667,14 @@ def converse(
         content = assistant.get("content", [])
         if not isinstance(content, list) or not content:
             raise RuntimeError("model returned no conversational content")
+        invocation_usage = _model_usage(result, model_id=model_id, invocation=invocation)
+        model_usage.append(invocation_usage)
         _put_message(
             table,
             conversation_id=conversation_id,
             role="assistant",
             content=content,
+            model_usage=invocation_usage,
         )
         messages.append({"role": "assistant", "content": content})
 
@@ -649,7 +689,12 @@ def converse(
             ).strip()
             if not text:
                 raise RuntimeError("model returned no text")
-            return {"text": text, "tool_events": tool_events}
+            return {
+                "text": text,
+                "tool_events": tool_events,
+                "modelUsage": model_usage,
+                "modelUsageTotals": _model_usage_totals(model_usage),
+            }
 
         tool_results: list[dict[str, Any]] = []
         for tool_use in tool_uses:
