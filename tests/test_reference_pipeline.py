@@ -1,12 +1,49 @@
-import importlib.util,json,os,time,unittest
+import contextlib
+import importlib.util
+import io
+import json
+import os
+import time
+import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import Mock
-import unittest.mock
-p=Path(__file__).parents[1]/'src/telephone/reference_pipeline.py';spec=importlib.util.spec_from_file_location('rp',p);rp=importlib.util.module_from_spec(spec);spec.loader.exec_module(rp)
-def event(kind):return {'InvocationEventType':kind,'CallDetails':{'TransactionId':'fixture','Participants':[{'ParticipantTag':'LEG-A','CallId':'leg'}]}}
-def payload(body):return {'Payload':Mock(read=lambda:json.dumps({'statusCode':202,'body':json.dumps(body)}).encode())}
+
+p=Path(__file__).parents[1]/'src/telephone/reference_pipeline.py'
+spec=importlib.util.spec_from_file_location('rp',p)
+rp=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rp)
+
+# Structural fixture transcribed from the official Amazon Chime SDK
+# SpeakAndGetDigits action documentation.  It deliberately does not reuse
+# production contract code, so obsolete parameter names cannot self-validate.
+OFFICIAL_SPEAK_AND_GET_DIGITS_FIXTURE={
+    'Type':'SpeakAndGetDigits',
+    'Parameters':{
+        'CallId':'leg',
+        'SpeechParameters':{'Text':'Welcome to Igor. Enter your PIN followed by pound.','Engine':'neural','LanguageCode':'en-US','TextType':'text','VoiceId':'Joanna'},
+        'FailureSpeechParameters':{'Text':'PIN entry timed out or was invalid. Please try again.','Engine':'neural','LanguageCode':'en-US','TextType':'text','VoiceId':'Joanna'},
+        'InputDigitsRegex':'^[0-9]{1,32}#$',
+        'MinNumberOfDigits':1,
+        'MaxNumberOfDigits':32,
+        'TerminatorDigits':['#'],
+        'InBetweenDigitsDurationInMilliseconds':5000,
+        'Repeat':3,
+        'RepeatDurationInMilliseconds':15000,
+    },
+}
+AWS_REQUIRED_SPEAK_AND_GET_DIGITS_FIELDS={'CallId','SpeechParameters','RepeatDurationInMilliseconds'}
+OBSOLETE_FIELDS={'TimeoutInSeconds','InBetweenDigitsTimeoutInMillis'}
+
+def event(kind):
+    return {'InvocationEventType':kind,'CallDetails':{'TransactionId':'fixture','Participants':[{'ParticipantTag':'LEG-A','CallId':'leg'}]}}
+def payload(body):
+    return {'Payload':Mock(read=lambda:json.dumps({'statusCode':202,'body':json.dumps(body)}).encode())}
+
 class T(unittest.TestCase):
- def setUp(self):os.environ.update(TELEPHONE_AUTH_SECRET_NAME='secret',TELEPHONE_CALLS_TABLE='calls',CONVERSATION_FUNCTION_NAME='conversation',CONTROL_FUNCTION_NAME='control');self.table=Mock();self.sec=Mock();self.sec.get_secret_value.return_value={'SecretString':json.dumps({'allow_any_caller':True,'pin':'1234'})}
+ def setUp(self):
+  os.environ.update(TELEPHONE_AUTH_SECRET_NAME='secret',TELEPHONE_CALLS_TABLE='calls',CONVERSATION_FUNCTION_NAME='conversation',CONTROL_FUNCTION_NAME='control')
+  self.table=Mock();self.sec=Mock();self.sec.get_secret_value.return_value={'SecretString':json.dumps({'allow_any_caller':True,'pin':'1234'})}
  def test_unauthenticated_and_failed_pin_have_no_meeting_or_tools(self):
   self.assertEqual('SpeakAndGetDigits',rp.handler(event('NEW_INBOUND_CALL'),None,Mock(),self.table,self.sec)['Actions'][0]['Type'])
   self.table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED','pin_attempts':0}};bad=event('ACTION_SUCCESSFUL');bad['ActionData']={'Type':'SpeakAndGetDigits','ReceivedDigits':'0000#'}
@@ -26,34 +63,35 @@ class T(unittest.TestCase):
   row={'call_id':'c'*32,'conversation_id':'v','authentication':'AUTHENTICATED','assertion_expires_at':int(time.time()+100),'confirmation':'PENDING','pending_action':'x','pending_expires_at':int(time.time()+100)};lam=Mock();lam.invoke.return_value={'FunctionError':'Unhandled'};self.table.query.return_value={'Items':[row]};self.assertIn('Execution failed',rp.bridge({'meeting_id':'m','transcript':'confirm'},None,lam,self.table)['response'])
 
 class RuntimeContractTests(unittest.TestCase):
- def setUp(self):
-  self.required={'TELEPHONE_AUTH_SECRET_NAME':'secret','TELEPHONE_CALLS_TABLE':'calls','CONTROL_FUNCTION_NAME':'control','CONVERSATION_FUNCTION_NAME':'conversation'}
+ def setUp(self): self.required={'TELEPHONE_AUTH_SECRET_NAME':'secret','TELEPHONE_CALLS_TABLE':'calls','CONTROL_FUNCTION_NAME':'control','CONVERSATION_FUNCTION_NAME':'conversation'}
  def test_missing_runtime_configuration_returns_truthful_valid_sma_failure_before_clients(self):
   for absent in self.required:
    with self.subTest(absent=absent):
     env=dict(self.required);env.pop(absent)
-    with unittest.mock.patch.dict(os.environ,env,clear=True):
-     out=rp.handler(event('NEW_INBOUND_CALL'),None)
-    self.assertEqual(['Speak','Hangup'],[a['Type'] for a in out['Actions']])
-    self.assertIn('configuration is unavailable',out['Actions'][0]['Parameters']['Text'])
-    self.assertEqual('0',out['Actions'][1]['Parameters']['SipResponseCode'])
+    with unittest.mock.patch.dict(os.environ,env,clear=True): out=rp.handler(event('NEW_INBOUND_CALL'),None)
+    self.assertEqual(['Speak','Hangup'],[a['Type'] for a in out['Actions']]);self.assertIn('configuration is unavailable',out['Actions'][0]['Parameters']['Text']);self.assertEqual('0',out['Actions'][1]['Parameters']['SipResponseCode'])
  def test_template_binds_all_handler_variables_and_only_intended_runtime_identities(self):
-  template=(Path(__file__).parents[1]/'template.yaml').read_text()
-  section=template.split('  ReferenceCompatibleVoiceFunction:',1)[1].split('  ReferenceCompatibleIgorBridgeFunction:',1)[0]
+  template=(Path(__file__).parents[1]/'template.yaml').read_text();section=template.split('  ReferenceCompatibleVoiceFunction:',1)[1].split('  ReferenceCompatibleIgorBridgeFunction:',1)[0]
   for name,target in {'TELEPHONE_AUTH_SECRET_NAME':'!Ref TelephoneAuthSecretName','TELEPHONE_CALLS_TABLE':'!Ref TelephoneCallsTable','CONTROL_FUNCTION_NAME':'!Ref ControlFunction','CONVERSATION_FUNCTION_NAME':'!Ref ConversationFunction'}.items(): self.assertIn(f'{name}: {target}',section)
-  policy=template.split('  ReferenceCompatibleVoiceRole:',1)[1].split('  ReferenceCompatibleVoiceFunction:',1)[0]
-  self.assertIn('Resource: !Ref TelephoneAuthSecretArn',policy)
-  self.assertNotIn('TelephoneAuthSecretName}-*',policy)
-  self.assertIn('Resource: [!GetAtt TelephoneCallsTable.Arn, !Sub "${TelephoneCallsTable.Arn}/index/MeetingIdIndex"]',policy)
-  self.assertIn('Resource: [!GetAtt ConversationFunction.Arn, !GetAtt ControlFunction.Arn]',policy)
- def test_new_inbound_pin_action_and_post_auth_handoff_contract(self):
+  policy=template.split('  ReferenceCompatibleVoiceRole:',1)[1].split('  ReferenceCompatibleVoiceFunction:',1)[0];self.assertIn('Resource: !Ref TelephoneAuthSecretArn',policy);self.assertNotIn('TelephoneAuthSecretName}-*',policy);self.assertIn('Resource: [!GetAtt TelephoneCallsTable.Arn, !Sub "${TelephoneCallsTable.Arn}/index/MeetingIdIndex"]',policy);self.assertIn('Resource: [!GetAtt ConversationFunction.Arn, !GetAtt ControlFunction.Arn]',policy)
+ def test_new_inbound_pin_action_matches_official_fixture_and_rejects_obsolete_names(self):
+  table=Mock();secret=Mock();secret.get_secret_value.return_value={'SecretString':json.dumps({'allow_any_caller':True,'pin':'1234'})}
+  with unittest.mock.patch.dict(os.environ,self.required,clear=True): inbound=rp.handler(event('NEW_INBOUND_CALL'),None,Mock(),table,secret)
+  action=inbound['Actions'][0]
+  self.assertEqual(OFFICIAL_SPEAK_AND_GET_DIGITS_FIXTURE,action)
+  self.assertTrue(AWS_REQUIRED_SPEAK_AND_GET_DIGITS_FIELDS <= set(action['Parameters']))
+  self.assertFalse(OBSOLETE_FIELDS & set(action['Parameters']))
+  for name in ('SpeechParameters','FailureSpeechParameters'): self.assertEqual({'Text','Engine','LanguageCode','TextType','VoiceId'},set(action['Parameters'][name]))
+ def test_safe_lifecycle_diagnostic_logs_required_fields_but_not_pin_or_payload(self):
+  incoming=event('ACTION_FAILED');incoming['Sequence']=7;incoming['ActionData']={'Type':'SpeakAndGetDigits','ErrorType':'InvalidDigits','ErrorMessage':'input failed','ReceivedDigits':'1234#'}
+  stream=io.StringIO()
+  with contextlib.redirect_stdout(stream):
+   with unittest.mock.patch.dict(os.environ,{},clear=True): rp.handler(incoming,None)
+  logged=json.loads(stream.getvalue())['chime_diagnostic']
+  self.assertEqual({'InvocationEventType':'ACTION_FAILED','Sequence':7,'ActionType':'SpeakAndGetDigits','ErrorType':'InvalidDigits','ErrorMessage':'input failed'},logged)
+  self.assertNotIn('1234',stream.getvalue());self.assertNotIn('CallDetails',stream.getvalue())
+ def test_post_auth_handoff_contract(self):
   table=Mock();secret=Mock();secret.get_secret_value.return_value={'SecretString':json.dumps({'allow_any_caller':True,'pin':'1234'})}
   with unittest.mock.patch.dict(os.environ,self.required,clear=True):
-   inbound=rp.handler(event('NEW_INBOUND_CALL'),None,Mock(),table,secret)
-   self.assertEqual('SpeakAndGetDigits',inbound['Actions'][0]['Type'])
-   table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED'}}
-   meetings=Mock();meetings.create_meeting_with_attendees.return_value={'Meeting':{'MeetingId':'meeting'},'Attendees':[{'JoinToken':'join'}]}
-   pin=event('ACTION_SUCCESSFUL');pin['ActionData']={'Type':'SpeakAndGetDigits','ReceivedDigits':'1234#'}
-   authenticated=rp.handler(pin,None,meetings,table,secret)
-  self.assertEqual('JoinChimeMeeting',authenticated['Actions'][0]['Type'])
-  row=table.put_item.call_args.kwargs['Item'];self.assertEqual('AUTHENTICATED',row['authentication']);self.assertTrue(row['authenticated_assertion'])
+   table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED'}};meetings=Mock();meetings.create_meeting_with_attendees.return_value={'Meeting':{'MeetingId':'meeting'},'Attendees':[{'JoinToken':'join'}]};pin=event('ACTION_SUCCESSFUL');pin['ActionData']={'Type':'SpeakAndGetDigits','ReceivedDigits':'1234#'};authenticated=rp.handler(pin,None,meetings,table,secret)
+  self.assertEqual('JoinChimeMeeting',authenticated['Actions'][0]['Type']);row=table.put_item.call_args.kwargs['Item'];self.assertEqual('AUTHENTICATED',row['authentication']);self.assertTrue(row['authenticated_assertion'])

@@ -19,9 +19,13 @@ def _leg(e:dict[str,Any],tag:str)->str:
   if p.get("ParticipantTag")==tag and isinstance(p.get("CallId"),str):return p["CallId"]
  return ""
 def _speak(text:str,call_id:str)->dict[str,Any]:return _action("Speak",{"Text":text,"CallId":call_id,"Engine":"neural","LanguageCode":"en-US","TextType":"text","VoiceId":"Joanna"})
+def _speech(text:str)->dict[str,str]:
+ return {"Text":text,"Engine":"neural","LanguageCode":"en-US","TextType":"text","VoiceId":"Joanna"}
 def _prompt(call_id:str,retry=False)->dict[str,Any]:
  text="PIN was not accepted. Enter your PIN followed by pound." if retry else "Welcome to Igor. Enter your PIN followed by pound."
- return _response([_action("SpeakAndGetDigits",{"CallId":call_id,"SpeechParameters":{"Text":text},"InputDigitsRegex":"^[0-9]{1,32}#$","TerminatorDigits":["#"],"TimeoutInSeconds":15,"InBetweenDigitsTimeoutInMillis":5000})],{})
+ # SpeakAndGetDigits uses milliseconds for its required repeat duration.  The
+ # former 15-second PIN window is therefore 15,000 milliseconds.
+ return _response([_action("SpeakAndGetDigits",{"CallId":call_id,"SpeechParameters":_speech(text),"FailureSpeechParameters":_speech("PIN entry timed out or was invalid. Please try again."),"InputDigitsRegex":"^[0-9]{1,32}#$","MinNumberOfDigits":1,"MaxNumberOfDigits":32,"TerminatorDigits":["#"],"InBetweenDigitsDurationInMilliseconds":5000,"Repeat":MAX_PIN_ATTEMPTS,"RepeatDurationInMilliseconds":15000})],{})
 def _secret(c:Any)->dict[str,Any]:return json.loads(c.get_secret_value(SecretId=os.environ["TELEPHONE_AUTH_SECRET_NAME"])["SecretString"])
 def _configured()->bool:return all(os.environ.get(name) for name in REQUIRED_RUNTIME_ENV)
 def _configuration_failure(event:dict[str,Any],attrs:dict[str,str])->dict[str,Any]:
@@ -32,7 +36,13 @@ def _assertion(call_id:str,conversation_id:str,pin:str)->str:
 def _digits(e:dict[str,Any])->str:return str((e.get("ActionData")or{}).get("ReceivedDigits")or(e.get("ActionData")or{}).get("Digits")or"").rstrip("#")
 def _link(table:Any,meeting:str)->dict[str,Any]:
  r=table.query(IndexName="MeetingIdIndex",KeyConditionExpression="meeting_id = :m",ExpressionAttributeValues={":m":meeting},ConsistentRead=False);return (r.get("Items")or[{}])[0]
+def _safe_chime_diagnostic(event:dict[str,Any])->None:
+ # Do not log the event, ReceivedDigits, caller data, or any transaction
+ # attributes. These are the only operational lifecycle fields retained.
+ data=event.get("ActionData") if isinstance(event.get("ActionData"),dict) else {}
+ print(json.dumps({"chime_diagnostic":{"InvocationEventType":event.get("InvocationEventType"),"Sequence":event.get("Sequence"),"ActionType":data.get("Type"),"ErrorType":data.get("ErrorType"),"ErrorMessage":data.get("ErrorMessage")}}))
 def handler(event:dict[str,Any],context:Any,meetings:Any=None,table:Any=None,secrets:Any=None)->dict[str,Any]:
+ _safe_chime_diagnostic(event)
  typ=event.get("InvocationEventType"); attrs=_attrs(event); tx=str((event.get("CallDetails")or{}).get("TransactionId")or""); call_id=_opaque(tx); leg=_leg(event,"LEG-A")
  if not _configured():return _configuration_failure(event,attrs)
  table=table or __import__('boto3').resource('dynamodb').Table(os.environ['TELEPHONE_CALLS_TABLE']); secrets=secrets or __import__('boto3').client('secretsmanager')
