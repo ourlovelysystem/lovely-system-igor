@@ -40,6 +40,11 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Current activity:", result["body"])
         self.assertIn("Live work events", result["body"])
         self.assertIn("event.exit_code", result["body"])
+        self.assertIn("const refreshTokenKey = 'igor.refreshToken';", result["body"])
+        self.assertIn("AuthFlow:'REFRESH_TOKEN_AUTH'", result["body"])
+        self.assertIn("await currentToken(true)", result["body"])
+        self.assertIn("sessionStorage.removeItem(refreshTokenKey)", result["body"])
+        self.assertIn("if (refreshPromise) return refreshPromise", result["body"])
 
     def test_non_root_path_is_not_found(self):
         result = dashboard.handler({"rawPath": "/missing"}, None)
