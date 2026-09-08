@@ -8,7 +8,7 @@ MAX_PIN_ATTEMPTS=3; ASSERTION_SECONDS=900; CONFIRM_SECONDS=300
 MUTATING=re.compile(r"\b(create|delete|remove|update|change|deploy|publish|push|commit|write|put|terminate|start|stop|infrastructure|code)\b",re.I)
 CONFIRM=re.compile(r"^\s*(confirm|yes|one)\s*[.!]?\s*$",re.I)
 DENY=re.compile(r"\b(no|cancel|deny|zero)\b",re.I)
-REQUIRED_RUNTIME_ENV=("TELEPHONE_AUTH_SECRET_NAME","TELEPHONE_CALLS_TABLE","CONTROL_FUNCTION_NAME","CONVERSATION_FUNCTION_NAME")
+REQUIRED_RUNTIME_ENV=("TELEPHONE_AUTH_SECRET_NAME","TELEPHONE_CALLS_TABLE","CONTROL_FUNCTION_NAME","CONVERSATION_FUNCTION_NAME","REFERENCE_MEETING_TABLE")
 def _opaque(v:str)->str:return hashlib.sha256(v.encode()).hexdigest()[:32]
 def _action(t:str,p:dict[str,Any])->dict[str,Any]:return {"Type":t,"Parameters":p}
 def _response(a:list[dict[str,Any]],x:dict[str,str])->dict[str,Any]:return {"SchemaVersion":"1.0","Actions":a,"TransactionAttributes":x}
@@ -44,7 +44,7 @@ def _safe_auth_diagnostic(event:dict[str,Any],auth_outcome:str,call_correlation:
  # Never log the event, PIN/digits, caller data, transaction attributes,
  # assertions, or transcript in the authentication transition record.
  print(json.dumps({"chime_diagnostic":{"auth_outcome":auth_outcome,"call_correlation":call_correlation,"next_action":next_action,"invocation_event_type":event.get("InvocationEventType"),"invocation_sequence":event.get("Sequence")}}))
-def handler(event:dict[str,Any],context:Any,meetings:Any=None,table:Any=None,secrets:Any=None)->dict[str,Any]:
+def handler(event:dict[str,Any],context:Any,meetings:Any=None,table:Any=None,secrets:Any=None,reference_table:Any=None)->dict[str,Any]:
  _safe_chime_diagnostic(event)
  typ=event.get("InvocationEventType"); attrs=_attrs(event); tx=str((event.get("CallDetails")or{}).get("TransactionId")or""); call_id=_opaque(tx); leg=_leg(event,"LEG-A")
  if not _configured():return _configuration_failure(event,attrs)
@@ -66,6 +66,7 @@ def handler(event:dict[str,Any],context:Any,meetings:Any=None,table:Any=None,sec
    _safe_auth_diagnostic(event,"REJECTED",call_id,"SpeakAndGetDigits")
    return _prompt(leg,True)
   client=meetings or __import__('boto3').client('chime-sdk-meetings',region_name='us-east-1'); out=client.create_meeting_with_attendees(ClientRequestToken=str(uuid.uuid4()),MediaRegion='us-east-1',ExternalMeetingId='MediaStreams',Attendees=[{"ExternalUserId":str(uuid.uuid4())}]); meeting=out['Meeting']['MeetingId']; conv=_opaque(tx or meeting); assertion=_assertion(call_id,conv,sec['pin'])
+  reference_table=reference_table or __import__('boto3').resource('dynamodb').Table(os.environ['REFERENCE_MEETING_TABLE']); reference_table.put_item(Item={"meetingId":meeting,"transactionId":tx})
   attrs.update(MeetingId=meeting,CallIdLegA=leg,IgorConversationId=conv); table.put_item(Item={"call_id":call_id,"record_key":"CALL","meeting_id":meeting,"conversation_id":conv,"authentication":"AUTHENTICATED","authenticated_assertion":assertion,"assertion_expires_at":int(time.time()+ASSERTION_SECONDS),"updated_at":datetime.now(UTC).isoformat(),"raw_audio_retained":False})
   # AWS documents an ordered Actions list; Speak is deliberately first so the
   # caller hears acknowledgement before the existing meeting join action.
