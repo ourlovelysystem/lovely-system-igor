@@ -39,6 +39,10 @@ elif [[ "$*" == *'secretsmanager describe-secret'* ]]; then
   printf '%s\n' 'arn:aws:secretsmanager:us-east-1:123456789012:secret:existing-secret-name-abcdef'
 elif [[ "$*" == *'TelephoneAuthSecretName'* ]]; then
   printf '%s\n' 'igor/telephone-auth'
+elif [[ "$*" == *'ReferenceMeetingTableName'* ]]; then
+  printf '%s\n' 'None'
+elif [[ "$*" == *'list-stack-resources'* && "$*" == *'meetingTable'* ]]; then
+  printf '%s\n' 'reference-meeting-table'
 elif [[ "$*" == *'GitHubTokenSecretName'* ]]; then
   [[ "$SCENARIO" == parameter-failure ]] && { echo 'lookup denied' >&2; exit 255; }
   case "$SCENARIO" in
@@ -79,6 +83,7 @@ args=open(sys.argv[1], 'rb').read().split(b'\0')
 assert ('GitHubTokenSecretName=' + sys.argv[2]).encode() in args, args
 assert b'TelephoneAuthSecretName=igor/telephone-auth' in args, args
 assert b'TelephoneAuthSecretArn=arn:aws:secretsmanager:us-east-1:123456789012:secret:existing-secret-name-abcdef' in args, args
+assert b'ReferenceMeetingTableName=reference-meeting-table' in args, args
 PY
   assert_no_secret_disclosure_or_retrieval
   python3 - "$work/aws.log" <<'PY'
@@ -106,6 +111,7 @@ args=open(sys.argv[1], 'rb').read().split(b'\0')
 assert not any(arg.startswith(b'GitHubTokenSecretName=') for arg in args), args
 assert b'TelephoneAuthSecretName=igor/telephone-auth' in args, args
 assert any(arg.startswith(b'TelephoneAuthSecretArn=arn:aws:secretsmanager:') for arg in args), args
+assert b'ReferenceMeetingTableName=reference-meeting-table' in args, args
 PY
 assert_no_secret_disclosure_or_retrieval
 # Failed existing-parameter lookup stops before SAM deployment and does not retrieve content.
