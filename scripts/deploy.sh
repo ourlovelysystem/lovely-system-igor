@@ -79,6 +79,24 @@ if [[ -z "$telephone_auth_secret_arn" ]]; then
 fi
 [[ "$telephone_auth_secret_arn" != "None" && -n "$telephone_auth_secret_arn" ]] || { echo "TelephoneAuthSecretArn is required; refusing to deploy." >&2; exit 1; }
 
+# Preserve an existing binding when present. During the first binding, discover
+# the reference stack's existing meeting table by resource type and logical ID;
+# this reads infrastructure metadata only.
+reference_meeting_table_name="${IGOR_REFERENCE_MEETING_TABLE_NAME:-}"
+if [[ -z "$reference_meeting_table_name" && -n "${existing_stack_id:-}" ]]; then
+  reference_meeting_table_name="$(aws cloudformation describe-stacks \
+    --stack-name "$stack_name" --region "$region" \
+    --query 'Stacks[0].Parameters[?ParameterKey==`ReferenceMeetingTableName`].ParameterValue | [0]' --output text)"
+  [[ "$reference_meeting_table_name" == "None" ]] && reference_meeting_table_name=""
+fi
+if [[ -z "$reference_meeting_table_name" ]]; then
+  reference_stack_name="${IGOR_REFERENCE_STACK_NAME:-AmazonChimeSDKMediaStreams}"
+  reference_meeting_table_name="$(aws cloudformation list-stack-resources \
+    --stack-name "$reference_stack_name" --region "$region" \
+    --query 'StackResourceSummaries[?ResourceType==`AWS::DynamoDB::Table` && contains(LogicalResourceId, `meetingTable`)].PhysicalResourceId | [0]' --output text)"
+fi
+[[ "$reference_meeting_table_name" != "None" && -n "$reference_meeting_table_name" ]] || { echo "ReferenceMeetingTableName is required; refusing to deploy." >&2; exit 1; }
+
 sam build
 sam deploy \
   --stack-name "$stack_name" \
@@ -93,6 +111,7 @@ sam deploy \
     "SourceRevision=$source_revision" \
     "TelephoneAuthSecretName=$telephone_auth_secret_name" \
     "TelephoneAuthSecretArn=$telephone_auth_secret_arn" \
+    "ReferenceMeetingTableName=$reference_meeting_table_name" \
     "${github_token_parameter[@]}"
 
 # The bounded diagnostic WAV is uploaded only after CloudFormation creates its private bucket and Chime policy.
