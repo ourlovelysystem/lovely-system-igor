@@ -17,6 +17,7 @@ from typing import Any
 
 
 TERMINAL_STATES = {"WORKING", "FAILED", "BLOCKED", "INCOMPLETE"}
+CODEBUILD_TERMINAL_STATES = {"SUCCEEDED", "FAILED", "FAULT", "STOPPED", "TIMED_OUT"}
 MAX_IDEA_LENGTH = 10_000
 MAX_LISTED_JOBS = 100
 
@@ -78,6 +79,143 @@ def _list_jobs(table: Any) -> list[dict[str, Any]]:
 
     items.sort(key=lambda item: item.get("created_at", ""), reverse=True)
     return items[:MAX_LISTED_JOBS]
+
+
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if hasattr(value, "isoformat") else None
+
+
+def _persist_terminal_reconciliation(table: Any, item: dict[str, Any]) -> None:
+    """Conditionally close a stale job without racing a worker's terminal write."""
+    reconciled_at = now_iso()
+    stored_status = item["stored_status"]
+    executor_status = item["execution_state"]
+    activity = (
+        f"Worker is not running. CodeBuild ended with {executor_status}; "
+        "terminal job publication was not completed."
+    )
+    failure = {
+        "stage": "terminalization",
+        "message": (
+            f"Stored status {stored_status} was stale: the backing CodeBuild "
+            f"execution ended with {executor_status}."
+        ),
+    }
+    event = work_event(
+        "reconciled",
+        "Closed stale non-terminal job after authoritative worker-state check.",
+        executor_status=executor_status,
+        terminal_status="INCOMPLETE",
+    )
+    try:
+        table.update_item(
+            Key={"job_id": item["job_id"]},
+            UpdateExpression=(
+                "SET #s = :incomplete, stored_status = :stored_status, #stage = :stage, "
+                "progress_message = :progress, current_activity = :activity, updated_at = :updated, "
+                "execution_active = :inactive, execution_state = :execution_state, "
+                "execution_phase = :execution_phase, execution_started_at = :execution_started_at, "
+                "execution_ended_at = :execution_ended_at, failure = if_not_exists(failure, :failure), "
+                "work_events = list_append(if_not_exists(work_events, :empty), :events)"
+            ),
+            ConditionExpression=(
+                "(#s = :queued OR #s = :running) AND build_id = :build_id"
+            ),
+            ExpressionAttributeNames={"#s": "status", "#stage": "stage"},
+            ExpressionAttributeValues={
+                ":incomplete": "INCOMPLETE",
+                ":stored_status": stored_status,
+                ":stage": "terminalization",
+                ":progress": "Execution ended without publishing a durable terminal result.",
+                ":activity": activity,
+                ":updated": reconciled_at,
+                ":inactive": False,
+                ":execution_state": executor_status,
+                ":execution_phase": item.get("execution_phase"),
+                ":execution_started_at": item.get("execution_started_at"),
+                ":execution_ended_at": item.get("execution_ended_at"),
+                ":failure": failure,
+                ":empty": [],
+                ":events": [event],
+                ":queued": "QUEUED",
+                ":running": "RUNNING",
+                ":build_id": item["build_id"],
+            },
+        )
+        item["updated_at"] = reconciled_at
+        item["work_events"] = [*item.get("work_events", []), event]
+        item["reconciliation_persisted"] = True
+    except Exception:
+        # Conditional failure means the worker won the race. Other persistence
+        # failures remain visible without turning job retrieval into an outage.
+        item["reconciliation_persisted"] = False
+
+
+def _reconcile_execution_states(
+    items: list[dict[str, Any]], codebuild: Any, table: Any
+) -> list[dict[str, Any]]:
+    """Reconcile database job labels against authoritative worker liveness."""
+    pending = {
+        item["build_id"]: item
+        for item in items
+        if item.get("status") not in TERMINAL_STATES
+        and isinstance(item.get("build_id"), str)
+        and item["build_id"] != "unknown"
+    }
+    if not pending:
+        return items
+
+    try:
+        result = codebuild.batch_get_builds(ids=list(pending))
+    except Exception:
+        # A liveness lookup failure must not break job retrieval. More importantly,
+        # it must not turn an unverified database label into an "active" claim.
+        for item in pending.values():
+            item["execution_active"] = False
+            item["execution_state"] = "UNVERIFIED"
+        return items
+
+    found: set[str] = set()
+    for build in result.get("builds", []):
+        build_id = build.get("id")
+        item = pending.get(build_id)
+        if item is None:
+            continue
+        found.add(build_id)
+        executor_status = build.get("buildStatus", "UNKNOWN")
+        complete = bool(build.get("buildComplete")) or executor_status in CODEBUILD_TERMINAL_STATES
+        item["execution_active"] = not complete and executor_status == "IN_PROGRESS"
+        item["execution_state"] = executor_status
+        item["execution_phase"] = build.get("currentPhase")
+        item["execution_started_at"] = _iso(build.get("startTime"))
+        item["execution_ended_at"] = _iso(build.get("endTime"))
+        if complete:
+            stored_status = item.get("status", "UNKNOWN")
+            item["stored_status"] = stored_status
+            item["status"] = "INCOMPLETE"
+            item["stage"] = "terminalization"
+            item["progress_message"] = "Execution ended without publishing a durable terminal result."
+            item["current_activity"] = (
+                f"Worker is not running. CodeBuild ended with {executor_status}; "
+                "terminal job publication was not completed."
+            )
+            item.setdefault(
+                "failure",
+                {
+                    "stage": "terminalization",
+                    "message": (
+                        f"Stored status {stored_status} was stale: the backing CodeBuild "
+                        f"execution ended with {executor_status}."
+                    ),
+                },
+            )
+            _persist_terminal_reconciliation(table, item)
+
+    for build_id, item in pending.items():
+        if build_id not in found:
+            item["execution_active"] = False
+            item["execution_state"] = "NOT_FOUND"
+    return items
 
 
 def handle(
@@ -177,7 +315,7 @@ def handle(
         return response(202, {"job_id": job_id, "status": "QUEUED", "build_id": build_id})
 
     if method == "GET" and path == "/jobs":
-        return response(200, {"jobs": _list_jobs(table)})
+        return response(200, {"jobs": _reconcile_execution_states(_list_jobs(table), codebuild, table)})
 
     if method == "GET" and path.startswith("/jobs/"):
         job_id = path.removeprefix("/jobs/")
@@ -186,7 +324,7 @@ def handle(
         item = table.get_item(Key={"job_id": job_id}, ConsistentRead=True).get("Item")
         if not item:
             return response(404, {"error": "job not found", "job_id": job_id})
-        return response(200, item)
+        return response(200, _reconcile_execution_states([item], codebuild, table)[0])
 
     if method == "GET" and path == "/health":
         return response(200, {"name": "Igor", "status": "ready"})

@@ -14,6 +14,7 @@ class ApiTests(unittest.TestCase):
         self.table = Mock()
         self.codebuild = Mock()
         self.codebuild.start_build.return_value = {"build": {"id": "igor-worker:123"}}
+        self.codebuild.batch_get_builds.return_value = {"builds": []}
 
     def call(self, method, path, body=None):
         event = {
@@ -104,6 +105,75 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(200, result["statusCode"])
         jobs = json.loads(result["body"])["jobs"]
         self.assertEqual(["two", "one"], [job["job_id"] for job in jobs])
+
+    def test_stale_running_job_is_not_reported_as_active_after_failed_build(self):
+        self.table.scan.return_value = {"Items": [{
+            "job_id": "stale", "status": "RUNNING", "stage": "verify",
+            "build_id": "igor-worker:stale", "created_at": "2026-09-04T00:00:00+00:00",
+        }]}
+        self.codebuild.batch_get_builds.return_value = {"builds": [{
+            "id": "igor-worker:stale", "buildStatus": "FAILED",
+            "buildComplete": True, "currentPhase": "COMPLETED",
+        }]}
+
+        job = json.loads(self.call("GET", "/jobs")["body"])["jobs"][0]
+
+        self.assertEqual("INCOMPLETE", job["status"])
+        self.assertEqual("RUNNING", job["stored_status"])
+        self.assertFalse(job["execution_active"])
+        self.assertEqual("FAILED", job["execution_state"])
+        self.assertEqual("terminalization", job["stage"])
+        self.assertTrue(job["reconciliation_persisted"])
+        update = self.table.update_item.call_args.kwargs
+        self.assertEqual({"job_id": "stale"}, update["Key"])
+        self.assertIn("build_id = :build_id", update["ConditionExpression"])
+        self.assertEqual("INCOMPLETE", update["ExpressionAttributeValues"][":incomplete"])
+        self.assertFalse(update["ExpressionAttributeValues"][":inactive"])
+
+    def test_stale_running_job_is_incomplete_even_when_build_succeeded(self):
+        self.table.get_item.return_value = {"Item": {
+            "job_id": "stale", "status": "RUNNING", "build_id": "igor-worker:stale",
+        }}
+        self.codebuild.batch_get_builds.return_value = {"builds": [{
+            "id": "igor-worker:stale", "buildStatus": "SUCCEEDED",
+            "buildComplete": True, "currentPhase": "COMPLETED",
+        }]}
+
+        job = json.loads(self.call("GET", "/jobs/stale")["body"])
+
+        self.assertEqual("INCOMPLETE", job["status"])
+        self.assertFalse(job["execution_active"])
+        self.assertEqual("SUCCEEDED", job["execution_state"])
+        self.table.update_item.assert_called_once()
+
+    def test_in_progress_build_is_authoritatively_active(self):
+        self.table.scan.return_value = {"Items": [{
+            "job_id": "live", "status": "RUNNING", "build_id": "igor-worker:live",
+            "created_at": "2026-09-04T00:00:00+00:00",
+        }]}
+        self.codebuild.batch_get_builds.return_value = {"builds": [{
+            "id": "igor-worker:live", "buildStatus": "IN_PROGRESS",
+            "buildComplete": False, "currentPhase": "BUILD",
+        }]}
+
+        job = json.loads(self.call("GET", "/jobs")["body"])["jobs"][0]
+
+        self.assertEqual("RUNNING", job["status"])
+        self.assertTrue(job["execution_active"])
+        self.assertEqual("BUILD", job["execution_phase"])
+        self.table.update_item.assert_not_called()
+
+    def test_unavailable_liveness_check_never_claims_active(self):
+        self.table.scan.return_value = {"Items": [{
+            "job_id": "unknown", "status": "RUNNING", "build_id": "igor-worker:unknown",
+            "created_at": "2026-09-04T00:00:00+00:00",
+        }]}
+        self.codebuild.batch_get_builds.side_effect = RuntimeError("unavailable")
+
+        job = json.loads(self.call("GET", "/jobs")["body"])["jobs"][0]
+
+        self.assertFalse(job["execution_active"])
+        self.assertEqual("UNVERIFIED", job["execution_state"])
 
 
 if __name__ == "__main__":

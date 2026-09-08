@@ -338,7 +338,9 @@ Resources:
                   - dynamodb:UpdateItem
                 Resource: !GetAtt JobsTable.Arn
               - Effect: Allow
-                Action: codebuild:StartBuild
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
                 Resource: !GetAtt WorkerProject.Arn
 
   ControlFunction:
