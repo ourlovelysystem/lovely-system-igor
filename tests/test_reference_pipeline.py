@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import time
 import unittest
 import unittest.mock
@@ -23,7 +24,7 @@ OFFICIAL_SPEAK_AND_GET_DIGITS_FIXTURE={
         'CallId':'leg',
         'SpeechParameters':{'Text':'Welcome to Igor. Enter your PIN followed by pound.','Engine':'neural','LanguageCode':'en-US','TextType':'text','VoiceId':'Joanna'},
         'FailureSpeechParameters':{'Text':'PIN entry timed out or was invalid. Please try again.','Engine':'neural','LanguageCode':'en-US','TextType':'text','VoiceId':'Joanna'},
-        'InputDigitsRegex':'^[0-9]{1,32}#$',
+        'InputDigitsRegex':'^[0-9]{1,32}$',
         'MinNumberOfDigits':1,
         'MaxNumberOfDigits':32,
         'TerminatorDigits':['#'],
@@ -82,6 +83,16 @@ class RuntimeContractTests(unittest.TestCase):
   self.assertTrue(AWS_REQUIRED_SPEAK_AND_GET_DIGITS_FIELDS <= set(action['Parameters']))
   self.assertFalse(OBSOLETE_FIELDS & set(action['Parameters']))
   for name in ('SpeechParameters','FailureSpeechParameters'): self.assertEqual({'Text','Engine','LanguageCode','TextType','VoiceId'},set(action['Parameters'][name]))
+ def test_numeric_digits_followed_by_configured_terminator_satisfy_action_contract(self):
+  parameters=OFFICIAL_SPEAK_AND_GET_DIGITS_FIXTURE['Parameters']
+  self.assertEqual(['#'],parameters['TerminatorDigits'])
+  self.assertIsNotNone(re.fullmatch(parameters['InputDigitsRegex'],'1234'))
+  self.assertIsNone(re.fullmatch(parameters['InputDigitsRegex'],'1234#'))
+ def test_chime_received_digits_without_terminator_authenticate_correct_pin(self):
+  table=Mock();secret=Mock();secret.get_secret_value.return_value={'SecretString':json.dumps({'allow_any_caller':True,'pin':'1234'})}
+  with unittest.mock.patch.dict(os.environ,self.required,clear=True):
+   table.get_item.return_value={'Item':{'authentication':'PIN_REQUIRED'}};meetings=Mock();meetings.create_meeting_with_attendees.return_value={'Meeting':{'MeetingId':'meeting'},'Attendees':[{'JoinToken':'join'}]};pin=event('ACTION_SUCCESSFUL');pin['ActionData']={'Type':'SpeakAndGetDigits','ReceivedDigits':'1234'};authenticated=rp.handler(pin,None,meetings,table,secret)
+  self.assertEqual('JoinChimeMeeting',authenticated['Actions'][0]['Type']);row=table.put_item.call_args.kwargs['Item'];self.assertEqual('AUTHENTICATED',row['authentication']);self.assertTrue(row['authenticated_assertion'])
  def test_safe_lifecycle_diagnostic_logs_required_fields_but_not_pin_or_payload(self):
   incoming=event('ACTION_FAILED');incoming['Sequence']=7;incoming['ActionData']={'Type':'SpeakAndGetDigits','ErrorType':'InvalidDigits','ErrorMessage':'input failed','ReceivedDigits':'1234#'}
   stream=io.StringIO()

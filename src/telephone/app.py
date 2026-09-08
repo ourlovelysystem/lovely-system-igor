@@ -98,7 +98,7 @@ def _diagnostic_hangup(sip_response_code: str) -> dict[str, Any]:
     return _sma([{"Type":"Hangup", "Parameters":{"ParticipantTag":"LEG-A", "SipResponseCode":sip_response_code}}])
 def _pin_prompt(call_id: str, retry: bool = False) -> dict[str, Any]:
     text = "PIN was not accepted. Enter your PIN followed by pound." if retry else "Welcome to Igor. Enter your PIN followed by pound."
-    return _sma([{"Type":"SpeakAndGetDigits","Parameters":{"CallId":call_id,"SpeechParameters":{"Text":text},"InputDigitsRegex":"^[0-9]{1,32}#$","TerminatorDigits":["#"],"TimeoutInSeconds":15,"InBetweenDigitsTimeoutInMillis":5000}}])
+    return _sma([{"Type":"SpeakAndGetDigits","Parameters":{"CallId":call_id,"SpeechParameters":{"Text":text},"InputDigitsRegex":"^[0-9]{1,32}$","TerminatorDigits":["#"],"TimeoutInSeconds":15,"InBetweenDigitsTimeoutInMillis":5000}}])
 def _is_digit_result(event: dict[str, Any]) -> bool:
     data = event.get("ActionData") or {}
     return "ReceivedDigits" in data or "Digits" in data

@@ -25,7 +25,7 @@ def _prompt(call_id:str,retry=False)->dict[str,Any]:
  text="PIN was not accepted. Enter your PIN followed by pound." if retry else "Welcome to Igor. Enter your PIN followed by pound."
  # SpeakAndGetDigits uses milliseconds for its required repeat duration.  The
  # former 15-second PIN window is therefore 15,000 milliseconds.
- return _response([_action("SpeakAndGetDigits",{"CallId":call_id,"SpeechParameters":_speech(text),"FailureSpeechParameters":_speech("PIN entry timed out or was invalid. Please try again."),"InputDigitsRegex":"^[0-9]{1,32}#$","MinNumberOfDigits":1,"MaxNumberOfDigits":32,"TerminatorDigits":["#"],"InBetweenDigitsDurationInMilliseconds":5000,"Repeat":MAX_PIN_ATTEMPTS,"RepeatDurationInMilliseconds":15000})],{})
+ return _response([_action("SpeakAndGetDigits",{"CallId":call_id,"SpeechParameters":_speech(text),"FailureSpeechParameters":_speech("PIN entry timed out or was invalid. Please try again."),"InputDigitsRegex":"^[0-9]{1,32}$","MinNumberOfDigits":1,"MaxNumberOfDigits":32,"TerminatorDigits":["#"],"InBetweenDigitsDurationInMilliseconds":5000,"Repeat":MAX_PIN_ATTEMPTS,"RepeatDurationInMilliseconds":15000})],{})
 def _secret(c:Any)->dict[str,Any]:return json.loads(c.get_secret_value(SecretId=os.environ["TELEPHONE_AUTH_SECRET_NAME"])["SecretString"])
 def _configured()->bool:return all(os.environ.get(name) for name in REQUIRED_RUNTIME_ENV)
 def _configuration_failure(event:dict[str,Any],attrs:dict[str,str])->dict[str,Any]:
