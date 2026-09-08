@@ -22,7 +22,7 @@ github_token_parameter=()
 
 # An omitted credential setting must not clear an existing integration.  Read only
 # the Secrets Manager *name* from CloudFormation; never retrieve the secret.
-if [[ -v IGOR_GITHUB_TOKEN_SECRET_NAME ]]; then
+if [[ -n "${IGOR_GITHUB_TOKEN_SECRET_NAME+x}" ]]; then
   github_token_secret_name="$IGOR_GITHUB_TOKEN_SECRET_NAME"
   github_token_parameter=("GitHubTokenSecretName=$github_token_secret_name")
 else
