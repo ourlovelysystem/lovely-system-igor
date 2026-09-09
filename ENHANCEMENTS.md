@@ -768,3 +768,16 @@ Copy this block and use the next identifier:
   - No terminal execution is included in the active-job count.
   - Successful worker completion and ordinary live progress retain their current
     behavior.
+
+### IGOR-021 — Reproducible retirement
+
+- Status: `IN PROGRESS`
+- Candidate release: Final archived release
+- Observed problem: Igor can be deployed from this repository, but it had no bounded retirement procedure distinguishing the application stack from retained evidence, external secrets, the separate reference media stack, telephone numbers, and workloads created by prior jobs.
+- Intended outcome: Preserve an exact, tested Git revision and a non-sensitive live-resource inventory, detach shared telephone/media dependencies, and delete only the live Igor application while retaining auditable state and a documented redeployment path.
+- Acceptance evidence:
+  - A dry run inventories the exact deployed stack revision and physical resources.
+  - Retirement refuses to proceed while a worker is active or the reference media stack still routes to Igor.
+  - Execution requires an exact stack-name confirmation and archives the manifest before deletion.
+  - The Igor stack is deleted while retained tables, evidence, operator pool, secrets, telephone number, reference stack, and job-created workloads are not implicitly deleted.
+  - A clean checkout at the final tagged revision contains the prerequisites and commands needed to deploy Igor again.
