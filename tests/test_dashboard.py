@@ -46,6 +46,18 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("sessionStorage.removeItem(refreshTokenKey)", result["body"])
         self.assertIn("if (refreshPromise) return refreshPromise", result["body"])
 
+    def test_terminal_worker_failure_is_visible_without_external_inspection(self):
+        body = dashboard.render_dashboard(
+            api_url="https://api.example.test/",
+            client_id="client-123",
+            region="us-east-1",
+        )["body"]
+        self.assertIn("function terminalizationFailure(job)", body)
+        self.assertIn("JOB FAILED", body)
+        self.assertIn("bubble.classList.toggle('error',terminalizationFailure(job))", body)
+        self.assertIn("document.querySelector('details.ledger').open=true", body)
+        self.assertIn("failed or incomplete", body)
+
     def test_non_root_path_is_not_found(self):
         result = dashboard.handler({"rawPath": "/missing"}, None)
         self.assertEqual(404, result["statusCode"])
