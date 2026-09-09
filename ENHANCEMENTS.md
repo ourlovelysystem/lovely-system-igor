@@ -28,7 +28,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 | Live directed work v1 | Make coding and infrastructure work inspectable, steerable, and recoverable across jobs | IGOR-008, IGOR-011, IGOR-012, IGOR-013 | IN PROGRESS | Recorded in deployed stack SourceRevision |
 | Responsive execution v1 | Reduce visible latency and avoid unnecessary worker starts without sacrificing evidence | IGOR-014, IGOR-015, IGOR-016, IGOR-017 | IN PROGRESS | IGOR-014: `894525b6142fed748341da9216d8c92bb022707e` |
 | Connected capabilities v1 | Research the web, use authorized applications, and create reusable artifacts | IGOR-007, IGOR-009, IGOR-010 | PROPOSED | — |
-| Telephone interface v1 | Let the authenticated operator converse with and direct Igor by telephone | IGOR-018 | IN PROGRESS | — |
+| Telephone interface v1 | Let the authenticated operator converse with and direct Igor by telephone | IGOR-018 | RELEASED | Igor `2f7cf5549fc144ca097abde8ee2ef01d6a7aa73d`; reference media `7c6f5a17cdc2731cb980589e6286a1e9492da51a` |
 | Dashboard usability v1 | Make conversation content easier to extract and reuse | IGOR-019 | READY | — |
 
 ## Enhancements
@@ -474,7 +474,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 
 ### IGOR-018 — Telephone conversation and command interface
 
-- Status: `IN PROGRESS`
+- Status: `RELEASED`
 - Candidate release: Telephone interface v1
 - Observed problem: Igor is available through the dashboard but has no telephone
   interface. The operator cannot call Igor, ask spoken questions, hear answers,
@@ -729,3 +729,12 @@ Copy this block and use the next identifier:
 - Disproportionate deployment behavior: the monolithic `scripts/deploy.sh` rebuilt every Lambda package and CloudFormation listed many possible stack-wide modifications because `SourceRevision` is shared broadly. The completed stack events show that only `ReferenceCompatibleIgorBridgeFunction` and the `WorkerProject` revision metadata were actually updated.
 - Enhancement: support component-scoped, CloudFormation-managed deployments so a bounded Lambda code or configuration change builds and evaluates only its owning component while preserving exact source-revision readback, rollback, tests, IAM review, and drift-free infrastructure state.
 - Acceptance: a bridge-only timeout or code change must not rebuild unrelated Lambda packages, change unrelated resources, upload diagnostic audio, or update the worker solely to propagate global revision metadata. The operation must still produce an exact published revision, targeted change set, successful resource readback, and reversible prior configuration.
+
+#### IGOR-018 physical acceptance and release — 2026-09-09
+
+- Status: **RELEASED**, by operator direction after the physical acceptance described here. The release does not add Agent Toolkit for AWS and does not change the deployed telephone or execution architecture.
+- Deployed revisions: the `igor` stack was independently read back as `UPDATE_COMPLETE` with `SourceRevision` `2f7cf5549fc144ca097abde8ee2ef01d6a7aa73d`. The reference media deployment used revision `7c6f5a17cdc2731cb980589e6286a1e9492da51a` and retained the authenticated Igor ingress and `igor_bridge` response route.
+- Physical execution evidence: through a real telephone call, the operator submitted the request "Create 2 EC2 instances, small ones." Igor created exactly two `t3.micro` Amazon Linux 2023 instances in `us-east-1a`: `i-0f25688b37ef6b6e8` and `i-0e87fc2bba49f996b`. Both carried the full ownership tag `igor:job-id=58b272fd4dc84b3b8b001c7882860ec8` and reached `running` with both EC2 instance and system status checks passed. The durable job finished `WORKING` and names both instances and their encrypted 8-GiB gp3 root volumes in `s3://igor-evidencebucket-kuuvbcaqekxt/jobs/58b272fd4dc84b3b8b001c7882860ec8/evidence.json`.
+- Cleanup evidence: the operator intentionally terminated both test instances. A later direct EC2 read showed both exact instance IDs in `terminated`; termination was expected cleanup, not an unexplained execution failure.
+- Telephone behavior evidence: in a later physical test, Igor stated that email was unavailable rather than claiming it could send email. When the operator said the answer was missed and requested repetition, Igor repeated the complete substantive answer. Igor made no job-submission claim for the unavailable email capability, and the operator observed no evidence that a job was created.
+- Scope of the release claim: this record proves authenticated physical telephone conversation, truthful capability reporting, missed-answer repetition, general AWS work reaching the existing durable worker, creation of real infrastructure, exact job/resource correlation, terminal evidence, and intentional cleanup. Historical acceptance bullets that were not exercised in this final sequence are not retroactively claimed as independently reverified by this record.
