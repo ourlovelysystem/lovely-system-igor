@@ -73,6 +73,15 @@ a replacement job. Answer requested questions substantively in the conversation;
 evidence locations support the answer but do not replace it. Never claim that authentication, execution,
 deployment, or success occurred merely because an earlier transition succeeded."""
 
+TELEPHONE_SYSTEM_PROMPT = """This interaction is heard over a telephone, not read from a screen.
+Use short, plain spoken answers without Markdown. A durable assistant message or successful SIP update
+does not prove the caller heard it. If the caller asks for a previous answer, says it was missed, or asks
+you to repeat it, restate the substantive answer in full; never reply merely that it was already answered.
+Treat the supplied tool configuration as the complete live capability list. External communication such
+as sending email is unavailable unless a dedicated communication tool is supplied;
+execute_task is not an email tool. State an unavailable capability before accepting the task. Never say a task was accepted,
+queued, submitted, or completed unless the corresponding tool result proves that exact state."""
+
 TOOL_CONFIG = {
     "tools": [
         {
@@ -633,6 +642,7 @@ def converse(
     s3: Any = None,
     attachments_bucket: str = "",
     allow_tools: bool = True,
+    telephone: bool = False,
 ) -> dict[str, Any]:
     messages = _load_messages(table, conversation_id)
     if attachments:
@@ -658,7 +668,7 @@ def converse(
     for invocation in range(1, MAX_TOOL_ROUNDS + 1):
         result = bedrock.converse(
             modelId=model_id,
-            system=[{"text": SYSTEM_PROMPT}],
+            system=[{"text": SYSTEM_PROMPT}, *([{"text": TELEPHONE_SYSTEM_PROMPT}] if telephone else [])],
             messages=messages,
             **({"toolConfig": TOOL_CONFIG} if allow_tools else {}),
             inferenceConfig={"maxTokens": 3000},
@@ -1063,6 +1073,7 @@ def handle(
                 s3=s3,
                 attachments_bucket=attachments_bucket,
                 allow_tools=(not bool(body.get("telephone")) or telephone_authenticated),
+                telephone=body.get("telephone") is True,
             )
             return response(200, {"conversation_id": conversation_id, **result})
 
