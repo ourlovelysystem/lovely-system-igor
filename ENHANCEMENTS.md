@@ -25,7 +25,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 | --- | --- | --- | --- | --- |
 | Upload experience v2 | Faster, inspectable uploads that survive conversation navigation safely | IGOR-001, IGOR-002, IGOR-003, IGOR-004, IGOR-005 | PROPOSED | — |
 | Multimodal conversations v1 | Understand the operator's screenshots, images, PDFs, and uploaded files | IGOR-006 | RELEASED | `f6b26240103826f9392b14ef02c4a576df208b44` |
-| Live directed work v1 | Make coding and infrastructure work inspectable, steerable, and recoverable across jobs | IGOR-008, IGOR-011, IGOR-012, IGOR-013 | IN PROGRESS | Recorded in deployed stack SourceRevision |
+| Live directed work v1 | Make coding and infrastructure work inspectable, steerable, and recoverable across jobs | IGOR-008, IGOR-011, IGOR-012, IGOR-013, IGOR-020 | IN PROGRESS | Recorded in deployed stack SourceRevision |
 | Responsive execution v1 | Reduce visible latency and avoid unnecessary worker starts without sacrificing evidence | IGOR-014, IGOR-015, IGOR-016, IGOR-017 | IN PROGRESS | IGOR-014: `894525b6142fed748341da9216d8c92bb022707e` |
 | Connected capabilities v1 | Research the web, use authorized applications, and create reusable artifacts | IGOR-007, IGOR-009, IGOR-010 | PROPOSED | — |
 | Telephone interface v1 | Let the authenticated operator converse with and direct Igor by telephone | IGOR-018 | RELEASED | Igor `2f7cf5549fc144ca097abde8ee2ef01d6a7aa73d`; reference media `7c6f5a17cdc2731cb980589e6286a1e9492da51a` |
@@ -738,3 +738,33 @@ Copy this block and use the next identifier:
 - Cleanup evidence: the operator intentionally terminated both test instances. A later direct EC2 read showed both exact instance IDs in `terminated`; termination was expected cleanup, not an unexplained execution failure.
 - Telephone behavior evidence: in a later physical test, Igor stated that email was unavailable rather than claiming it could send email. When the operator said the answer was missed and requested repetition, Igor repeated the complete substantive answer. Igor made no job-submission claim for the unavailable email capability, and the operator observed no evidence that a job was created.
 - Scope of the release claim: this record proves authenticated physical telephone conversation, truthful capability reporting, missed-answer repetition, general AWS work reaching the existing durable worker, creation of real infrastructure, exact job/resource correlation, terminal evidence, and intentional cleanup. Historical acceptance bullets that were not exercised in this final sequence are not retroactively claimed as independently reverified by this record.
+
+### IGOR-020 — Surface terminal worker failures in the conversation
+
+- Status: `IN PROGRESS`
+- Candidate release: Live directed work v1
+- Observed problem: Email-capability job `6d45f01ddf754ded986a36a01e058948`
+  appeared stalled in Igor after its CodeBuild execution had already ended
+  `FAILED`. Igor's API could reconcile the durable record to `INCOMPLETE`, but
+  the dashboard removed the running progress bubble and did not replace it with
+  a visible terminal error. The operator had to invoke Igor's control Lambda and
+  query CodeBuild outside the product to discover the failure.
+- Intended outcome: Within one normal dashboard refresh, a failed or incomplete
+  worker becomes an unmistakable terminal message in its originating
+  conversation, the work ledger opens to the failure, and the ledger summary no
+  longer represents the execution as active.
+- Implementation: Preserve reconciled terminalization jobs in the conversation
+  as red error messages instead of deleting their progress elements. Label an
+  executor `FAILED`, `FAULT`, `STOPPED`, or `TIMED_OUT` as `JOB FAILED`; label a
+  worker that ended without a durable result for another reason as
+  `JOB INCOMPLETE`. Show the exact job ID and non-sensitive reconciled activity,
+  open the work ledger for a newly observed failure, and report the count as
+  `failed or incomplete` rather than `active`.
+- Acceptance evidence:
+  - A terminal CodeBuild failure appears in the originating conversation without
+    an AWS CLI query or manual page reload.
+  - The terminal error remains visible after the conversation is reloaded.
+  - The work ledger opens automatically and displays the failure record.
+  - No terminal execution is included in the active-job count.
+  - Successful worker completion and ordinary live progress retain their current
+    behavior.
