@@ -738,3 +738,16 @@ Copy this block and use the next identifier:
 - Cleanup evidence: the operator intentionally terminated both test instances. A later direct EC2 read showed both exact instance IDs in `terminated`; termination was expected cleanup, not an unexplained execution failure.
 - Telephone behavior evidence: in a later physical test, Igor stated that email was unavailable rather than claiming it could send email. When the operator said the answer was missed and requested repetition, Igor repeated the complete substantive answer. Igor made no job-submission claim for the unavailable email capability, and the operator observed no evidence that a job was created.
 - Scope of the release claim: this record proves authenticated physical telephone conversation, truthful capability reporting, missed-answer repetition, general AWS work reaching the existing durable worker, creation of real infrastructure, exact job/resource correlation, terminal evidence, and intentional cleanup. Historical acceptance bullets that were not exercised in this final sequence are not retroactively claimed as independently reverified by this record.
+
+### IGOR-021 — Reproducible retirement
+
+- Status: `IN PROGRESS`
+- Candidate release: Final archived release
+- Observed problem: Igor can be deployed from this repository, but it had no bounded retirement procedure distinguishing the application stack from retained evidence, external secrets, the separate reference media stack, telephone numbers, and workloads created by prior jobs.
+- Intended outcome: Preserve an exact, tested Git revision and a non-sensitive live-resource inventory, detach shared telephone/media dependencies, and delete only the live Igor application while retaining auditable state and a documented redeployment path.
+- Acceptance evidence:
+  - A dry run inventories the exact deployed stack revision and physical resources.
+  - Retirement refuses to proceed while a worker is active or the reference media stack still routes to Igor.
+  - Execution requires an exact stack-name confirmation and archives the manifest before deletion.
+  - The Igor stack is deleted while retained tables, evidence, operator pool, secrets, telephone number, reference stack, and job-created workloads are not implicitly deleted.
+  - A clean checkout at the final tagged revision contains the prerequisites and commands needed to deploy Igor again.
