@@ -97,6 +97,12 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual("opaque-call", created["conversation_id"])
         self.assertEqual("telephone", created["owner_id"])
         self.assertEqual("META", created["record_key"])
+        system = self.bedrock.converse.call_args.kwargs["system"]
+        self.assertEqual(2, len(system))
+        telephone_prompt = system[1]["text"]
+        self.assertIn("restate the substantive answer in full", telephone_prompt)
+        self.assertIn("execute_task is not an email tool", telephone_prompt)
+        self.assertIn("does not prove the caller heard it", telephone_prompt)
 
     def test_missing_operator_conversation_is_not_created_implicitly(self):
         self.table.get_item.return_value = {}
@@ -191,6 +197,7 @@ class ConversationTests(unittest.TestCase):
         self.assertIn("use its durable record rather than creating", conversation.SYSTEM_PROMPT)
         self.assertIn("support the answer but do not replace it", conversation.SYSTEM_PROMPT)
         self.assertIn("merely because an earlier transition succeeded", conversation.SYSTEM_PROMPT)
+        self.assertIn("dedicated communication tool", conversation.TELEPHONE_SYSTEM_PROMPT)
 
     def test_binary_reasoning_content_survives_storage_round_trip(self):
         content = [
