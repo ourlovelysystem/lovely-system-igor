@@ -30,6 +30,7 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
 | Connected capabilities v1 | Research the web, use authorized applications, and create reusable artifacts | IGOR-007, IGOR-009, IGOR-010 | PROPOSED | — |
 | Telephone interface v1 | Let the authenticated operator converse with and direct Igor by telephone | IGOR-018 | RELEASED | Igor `2f7cf5549fc144ca097abde8ee2ef01d6a7aa73d`; reference media `7c6f5a17cdc2731cb980589e6286a1e9492da51a` |
 | Dashboard usability v1 | Make conversation content easier to extract and reuse | IGOR-019 | READY | — |
+| Reporting integrity v1 | Make completed investigations return the findings the operator requested | IGOR-020 | PROPOSED | — |
 
 ## Enhancements
 
@@ -598,6 +599,48 @@ Statuses: `PROPOSED`, `READY`, `SCHEDULED`, `IN PROGRESS`, `RELEASED`,
   - Clipboard failure is reported plainly and does not claim success.
   - Automated UI coverage verifies exact clipboard contents for plain text,
     multiline text, code blocks, and links.
+
+### IGOR-020 — Complete inspection reports
+
+- Status: `PROPOSED`
+- Candidate release: Reporting integrity v1
+- Category: Output contract / final reporting
+- Severity: High
+- Observed problem: A completed Igor investigation can claim that requested
+  findings were produced while returning only an executive summary, job status,
+  and evidence locations. The operator must then issue another request merely to
+  retrieve findings that the completed job already produced.
+- Reproducing example: Job `f424086550c34ca691a7a9631eeb6faf` was explicitly
+  directed to return substantive findings inline and not return only job metadata
+  or evidence URIs. Its final response omitted the ordered SMA event sequence,
+  component-level KVS/ECS/Transcribe observations, the first failed or
+  unobservable transition, ownership of that transition, and the smallest
+  evidence-supported repair.
+- Expected behavior: A completed job returns every explicitly requested finding
+  that can be disclosed safely. It identifies each unavailable finding and the
+  reason it is unavailable. Evidence URIs supplement the report; they do not
+  replace it.
+- Actual behavior: Igor returned a generalized completion summary and evidence
+  locations without the requested diagnostic details.
+- Impact: The defect creates unnecessary worker jobs and iterations, obscures
+  whether an investigation answered its directing question, makes verification
+  depend on cumbersome evidence archives, reduces confidence in completion
+  claims, and delays repair of the underlying defect.
+- Intended outcome: Finalization validates its response against the directing
+  prompt's requested deliverables. Igor cannot claim substantive completion when
+  required report sections are absent. If it cannot construct the required
+  report, it returns `INCOMPLETE` and enumerates the missing deliverables.
+- Acceptance evidence:
+  - A regression fixture requests multiple named findings and prohibits a
+    metadata-only response.
+  - The final response contains every requested finding or identifies it as
+    unavailable with a specific reason.
+  - Job metadata and evidence URIs remain supplementary.
+  - Missing required sections prevent a substantive success claim.
+  - No second worker job is required merely to expose findings already present
+    in completed evidence.
+  - Existing job and evidence records, including reproducer
+    `f424086550c34ca691a7a9631eeb6faf`, remain unchanged.
 
 ## Adding an enhancement
 
